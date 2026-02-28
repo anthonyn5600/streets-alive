@@ -1,113 +1,175 @@
 import * as THREE from 'three';
 import earcut from 'earcut';
-import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { project } from './projection';
+import { materialPool } from './materials';
+import { geometryFromArrays, applyBuildingColorsToArrays } from './tiles/geometry-cache';
 import type { BuildingData } from './types';
+import type { CachedBuildingArrays, BuildingVertexRange } from './tiles/geometry-cache';
 
-const BUILDING_COLOR = 0xd4d0c8;
+const DEFAULT_COLOR = new THREE.Color(0xd4d0c8);
+const DEFAULT_R = DEFAULT_COLOR.r;
+const DEFAULT_G = DEFAULT_COLOR.g;
+const DEFAULT_B = DEFAULT_COLOR.b;
 
-export function createBuildingMeshes(buildings: BuildingData[]): THREE.Mesh | null {
+export function buildBuildingGeometryArrays(
+  buildings: BuildingData[]
+): CachedBuildingArrays | null {
   if (buildings.length === 0) return null;
 
-  const geometries: THREE.BufferGeometry[] = [];
+  // Pass 1: project polygons, run earcut, count total sizes
+  const preps: Array<{
+    projected: Array<{ x: number; z: number }>;
+    earcutIndices: number[];
+    building: BuildingData;
+    n: number;
+  }> = [];
+  let totalVertices = 0;
+  let totalIndices = 0;
 
   for (const bld of buildings) {
-    const geom = extrudeBuilding(bld);
-    if (geom) geometries.push(geom);
+    const poly = bld.polygon;
+    if (poly.length < 4) continue;
+
+    const projected: Array<{ x: number; z: number }> = [];
+    for (let i = 0; i < poly.length - 1; i++) {
+      projected.push(project(poly[i]));
+    }
+    if (projected.length < 3) continue;
+
+    const flatCoords: number[] = [];
+    for (const p of projected) {
+      flatCoords.push(p.x, p.z);
+    }
+
+    const earcutIndices = earcut(flatCoords, undefined, 2);
+    if (earcutIndices.length === 0) continue;
+
+    const n = projected.length;
+    // Top cap: n vertices, earcutIndices.length indices
+    // Side walls: n * 4 vertices, n * 6 indices (no bottom cap)
+    totalVertices += n + n * 4;
+    totalIndices += earcutIndices.length + n * 6;
+
+    preps.push({ projected, earcutIndices, building: bld, n });
   }
 
-  if (geometries.length === 0) return null;
+  if (preps.length === 0) return null;
 
-  const merged = mergeGeometries(geometries, false);
-  for (const g of geometries) g.dispose();
+  // Allocate final arrays once
+  const positions = new Float32Array(totalVertices * 3);
+  const normals = new Float32Array(totalVertices * 3);
+  const colors = new Float32Array(totalVertices * 3);
+  const indices = new Uint32Array(totalIndices);
+  const ranges: BuildingVertexRange[] = [];
 
-  if (!merged) return null;
+  let vOff = 0;
+  let iOff = 0;
 
-  merged.computeVertexNormals();
-  merged.computeBoundingSphere();
+  // Pass 2: fill arrays directly
+  for (const { projected, earcutIndices, building, n } of preps) {
+    const height = building.height;
+    const minHeight = building.minHeight;
+    const startVertex = vOff;
 
-  const material = new THREE.MeshLambertMaterial({ color: BUILDING_COLOR, side: THREE.DoubleSide });
-  const mesh = new THREE.Mesh(merged, material);
+    // Top cap vertices (y = height, normal pointing up)
+    for (let i = 0; i < n; i++) {
+      const p = projected[i];
+      const vi3 = (vOff + i) * 3;
+      positions[vi3] = p.x;
+      positions[vi3 + 1] = height;
+      positions[vi3 + 2] = p.z;
+      normals[vi3] = 0;
+      normals[vi3 + 1] = 1;
+      normals[vi3 + 2] = 0;
+      colors[vi3] = DEFAULT_R;
+      colors[vi3 + 1] = DEFAULT_G;
+      colors[vi3 + 2] = DEFAULT_B;
+    }
+
+    for (let i = 0; i < earcutIndices.length; i++) {
+      indices[iOff + i] = vOff + earcutIndices[i];
+    }
+    iOff += earcutIndices.length;
+    vOff += n;
+
+    // Side walls (4 vertices per edge, flat normals)
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const p0 = projected[i];
+      const p1 = projected[j];
+
+      const dx = p1.x - p0.x;
+      const dz = p1.z - p0.z;
+      const len = Math.sqrt(dx * dx + dz * dz);
+      let nx = 0, nz = 0;
+      if (len > 0) {
+        nx = dz / len;
+        nz = -dx / len;
+      }
+
+      const base = vOff;
+
+      let vi3 = base * 3;
+      positions[vi3] = p0.x; positions[vi3 + 1] = height; positions[vi3 + 2] = p0.z;
+      normals[vi3] = nx; normals[vi3 + 1] = 0; normals[vi3 + 2] = nz;
+      colors[vi3] = DEFAULT_R; colors[vi3 + 1] = DEFAULT_G; colors[vi3 + 2] = DEFAULT_B;
+
+      vi3 = (base + 1) * 3;
+      positions[vi3] = p1.x; positions[vi3 + 1] = height; positions[vi3 + 2] = p1.z;
+      normals[vi3] = nx; normals[vi3 + 1] = 0; normals[vi3 + 2] = nz;
+      colors[vi3] = DEFAULT_R; colors[vi3 + 1] = DEFAULT_G; colors[vi3 + 2] = DEFAULT_B;
+
+      vi3 = (base + 2) * 3;
+      positions[vi3] = p1.x; positions[vi3 + 1] = minHeight; positions[vi3 + 2] = p1.z;
+      normals[vi3] = nx; normals[vi3 + 1] = 0; normals[vi3 + 2] = nz;
+      colors[vi3] = DEFAULT_R; colors[vi3 + 1] = DEFAULT_G; colors[vi3 + 2] = DEFAULT_B;
+
+      vi3 = (base + 3) * 3;
+      positions[vi3] = p0.x; positions[vi3 + 1] = minHeight; positions[vi3 + 2] = p0.z;
+      normals[vi3] = nx; normals[vi3 + 1] = 0; normals[vi3 + 2] = nz;
+      colors[vi3] = DEFAULT_R; colors[vi3 + 1] = DEFAULT_G; colors[vi3 + 2] = DEFAULT_B;
+
+      indices[iOff] = base;
+      indices[iOff + 1] = base + 1;
+      indices[iOff + 2] = base + 2;
+      indices[iOff + 3] = base;
+      indices[iOff + 4] = base + 2;
+      indices[iOff + 5] = base + 3;
+      iOff += 6;
+      vOff += 4;
+    }
+
+    ranges.push({
+      buildingId: building.id,
+      startVertex,
+      vertexCount: vOff - startVertex,
+    });
+  }
+
+  return { positions, normals, indices, colors, vertexRanges: ranges };
+}
+
+export function createBuildingMeshFromArrays(
+  cached: CachedBuildingArrays,
+  colorMap?: Map<number, THREE.Color>
+): THREE.Mesh {
+  const colors = colorMap
+    ? applyBuildingColorsToArrays(cached, colorMap, DEFAULT_COLOR)
+    : cached.colors;
+
+  const geom = geometryFromArrays(cached.positions, cached.indices, cached.normals, colors);
+  geom.computeBoundingSphere();
+
+  const mesh = new THREE.Mesh(geom, materialPool.getBuilding());
   mesh.name = 'buildings';
   return mesh;
 }
 
-function extrudeBuilding(bld: BuildingData): THREE.BufferGeometry | null {
-  const poly = bld.polygon;
-  if (poly.length < 4) return null;
-
-  // Project polygon to 2D (x, z in scene space)
-  const projected: Array<{ x: number; z: number }> = [];
-  for (let i = 0; i < poly.length - 1; i++) { // skip last (duplicate of first in OSM)
-    projected.push(project(poly[i]));
-  }
-
-  if (projected.length < 3) return null;
-
-  // Flatten for earcut (x, z)
-  const flatCoords: number[] = [];
-  for (const p of projected) {
-    flatCoords.push(p.x, p.z);
-  }
-
-  const indices = earcut(flatCoords, undefined, 2);
-  if (indices.length === 0) return null;
-
-  const n = projected.length;
-  const height = bld.height;
-  const minHeight = bld.minHeight;
-
-  // Build vertex arrays
-  // Top cap + bottom cap + side walls
-  const positions: number[] = [];
-  const indexArray: number[] = [];
-
-  // Top cap vertices (y = height)
-  for (const p of projected) {
-    positions.push(p.x, height, p.z);
-  }
-
-  // Top cap indices
-  for (const idx of indices) {
-    indexArray.push(idx);
-  }
-
-  // Bottom cap vertices (y = minHeight)
-  const bottomOffset = n;
-  for (const p of projected) {
-    positions.push(p.x, minHeight, p.z);
-  }
-
-  // Bottom cap indices (reversed winding)
-  for (let i = 0; i < indices.length; i += 3) {
-    indexArray.push(
-      bottomOffset + indices[i + 2],
-      bottomOffset + indices[i + 1],
-      bottomOffset + indices[i]
-    );
-  }
-
-  // Side walls
-  const sideOffset = n * 2;
-  for (let i = 0; i < n; i++) {
-    const j = (i + 1) % n;
-    const p0 = projected[i];
-    const p1 = projected[j];
-    const vi = sideOffset + i * 4;
-
-    // 4 vertices per wall segment
-    positions.push(p0.x, height, p0.z);      // top-left
-    positions.push(p1.x, height, p1.z);      // top-right
-    positions.push(p1.x, minHeight, p1.z);   // bottom-right
-    positions.push(p0.x, minHeight, p0.z);   // bottom-left
-
-    // 2 triangles per wall
-    indexArray.push(vi, vi + 1, vi + 2);
-    indexArray.push(vi, vi + 2, vi + 3);
-  }
-
-  const geom = new THREE.BufferGeometry();
-  geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-  geom.setIndex(indexArray);
-  return geom;
+export function createBuildingMeshes(
+  buildings: BuildingData[],
+  colorMap?: Map<number, THREE.Color>
+): THREE.Mesh | null {
+  const cached = buildBuildingGeometryArrays(buildings);
+  if (!cached) return null;
+  return createBuildingMeshFromArrays(cached, colorMap);
 }

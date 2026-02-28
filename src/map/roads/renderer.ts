@@ -1,6 +1,8 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { project } from '../projection';
+import { materialPool } from '../materials';
+import { geometryFromArrays } from '../tiles/geometry-cache';
 import {
   getRoadPriority,
   getRoadStyle,
@@ -10,22 +12,20 @@ import {
   HIGHWAY_SHADOW_EXTRA,
 } from './style';
 import type { RoadData, RoadStyle } from '../types';
+import type { CachedRoadArrays, CachedColoredRoadLayer, CachedRoadLayerArrays } from '../tiles/geometry-cache';
 
-const LOCAL_CASING_Y = 0.02;
-const LOCAL_FILL_Y = 0.05;
-const HW_SHADOW_Y = 0.06;
-const HW_CASING_Y = 0.065;
-const HW_FILL_Y = 0.07;
-const CENTER_LINE_Y = 0.075;
+const LOCAL_CASING_Y = 0.05;
+const LOCAL_FILL_Y = 0.15;
+const HW_SHADOW_Y = 0.20;
+const HW_CASING_Y = 0.25;
+const HW_FILL_Y = 0.35;
+const CENTER_LINE_Y = 0.40;
 const PRIORITY_STEP = 0.001;
 
 const CENTER_LINE_COLOR = 0xf0c14b;
 const CENTER_LINE_HALF_WIDTH = 0.5;
 const CENTER_LINE_DASH_ON = 4;
 const CENTER_LINE_DASH_OFF = 4;
-
-const SHADOW_COLOR = 0x000000;
-const SHADOW_OPACITY = 0.15;
 
 const centerLineDashStyle: RoadStyle = {
   fillColor: CENTER_LINE_COLOR,
@@ -49,10 +49,44 @@ export interface RoadMeshResult {
   highwayCenterLine: THREE.Object3D | null;
 }
 
-export function createRoadMeshes(
+function extractLayerArrays(geoms: THREE.BufferGeometry[]): CachedRoadLayerArrays | null {
+  if (geoms.length === 0) return null;
+  const merged = mergeGeometries(geoms, false);
+  for (const g of geoms) g.dispose();
+  if (!merged) return null;
+  const posAttr = merged.attributes.position as THREE.BufferAttribute;
+  const indexAttr = merged.index!;
+  const result: CachedRoadLayerArrays = {
+    positions: new Float32Array(posAttr.array as Float32Array),
+    indices: new Uint32Array(indexAttr.array as Uint32Array),
+  };
+  merged.dispose();
+  return result;
+}
+
+function extractColoredLayerArrays(colorMap: Map<number, THREE.BufferGeometry[]>): CachedColoredRoadLayer[] {
+  const layers: CachedColoredRoadLayer[] = [];
+  for (const [color, geoms] of colorMap) {
+    if (geoms.length === 0) continue;
+    const merged = mergeGeometries(geoms, false);
+    for (const g of geoms) g.dispose();
+    if (!merged) continue;
+    const posAttr = merged.attributes.position as THREE.BufferAttribute;
+    const indexAttr = merged.index!;
+    layers.push({
+      color,
+      positions: new Float32Array(posAttr.array as Float32Array),
+      indices: new Uint32Array(indexAttr.array as Uint32Array),
+    });
+    merged.dispose();
+  }
+  return layers;
+}
+
+export function buildRoadGeometryArrays(
   roads: RoadData[],
   zoomLevel: number
-): RoadMeshResult {
+): CachedRoadArrays {
   const localCasingColors = new Map<number, THREE.BufferGeometry[]>();
   const localFillColors = new Map<number, THREE.BufferGeometry[]>();
   const localCenterLineGeoms: THREE.BufferGeometry[] = [];
@@ -82,7 +116,6 @@ export function createRoadMeshes(
       ? HW_CASING_Y + priority * PRIORITY_STEP
       : LOCAL_CASING_Y + priority * PRIORITY_STEP;
 
-    // Highway mask + shadow ribbons
     if (isHw) {
       const maskHalfWidth = style.casingWidth / 2 + HIGHWAY_MASK_EXTRA;
       const maskGeom = buildRibbon(pts, maskHalfWidth, null, HW_SHADOW_Y);
@@ -93,7 +126,6 @@ export function createRoadMeshes(
       if (shadowGeom) hwShadowGeoms.push(shadowGeom);
     }
 
-    // Fill ribbons (divided lanes or single)
     if (isDividedRoad(road.type)) {
       const laneHalf = (style.fillWidth * 0.4) / 2;
       const laneOffset = style.fillWidth * 0.3;
@@ -123,7 +155,6 @@ export function createRoadMeshes(
       }
     }
 
-    // Center line for divided roads
     if (isDividedRoad(road.type)) {
       const clGeom = buildRibbon(pts, CENTER_LINE_HALF_WIDTH, centerLineDashStyle, CENTER_LINE_Y);
       if (clGeom) {
@@ -132,7 +163,6 @@ export function createRoadMeshes(
       }
     }
 
-    // Casing ribbon
     if (style.casingColor !== null) {
       const casingGeom = buildRibbon(pts, style.casingWidth / 2, null, casingY);
       if (casingGeom) {
@@ -142,188 +172,106 @@ export function createRoadMeshes(
     }
   }
 
-  // --- Build local road meshes (with stencil test) ---
-  const localCasingMeshes = buildColorMeshes(localCasingColors, {
-    polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 1,
-    stencilWrite: false,
-    stencilFunc: THREE.NotEqualStencilFunc,
-    stencilRef: 1,
-    stencilFuncMask: 0xff,
-  });
+  return {
+    localCasing: extractColoredLayerArrays(localCasingColors),
+    localFill: extractColoredLayerArrays(localFillColors),
+    localCenterLine: extractLayerArrays(localCenterLineGeoms),
+    hwMask: extractLayerArrays(hwMaskGeoms),
+    hwShadow: extractLayerArrays(hwShadowGeoms),
+    hwCasing: extractColoredLayerArrays(hwCasingColors),
+    hwFill: extractColoredLayerArrays(hwFillColors),
+    hwCenterLine: extractLayerArrays(hwCenterLineGeoms),
+  };
+}
 
-  const localFillMeshes = buildColorMeshes(localFillColors, {
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
-    stencilWrite: false,
-    stencilFunc: THREE.NotEqualStencilFunc,
-    stencilRef: 1,
-    stencilFuncMask: 0xff,
-  });
+export function createRoadMeshesFromArrays(cached: CachedRoadArrays): RoadMeshResult {
+  // Local casing
+  const localCasingMeshes: THREE.Mesh[] = [];
+  for (const layer of cached.localCasing) {
+    const geom = geometryFromArrays(layer.positions, layer.indices);
+    localCasingMeshes.push(new THREE.Mesh(geom, materialPool.getLocalRoadColor(layer.color)));
+  }
 
-  // --- Build highway meshes (no stencil test) ---
-  const hwCasingMeshes = buildColorMeshes(hwCasingColors, {
-    polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 1,
-  });
+  // Local fill
+  const localFillMeshes: THREE.Mesh[] = [];
+  for (const layer of cached.localFill) {
+    const geom = geometryFromArrays(layer.positions, layer.indices);
+    localFillMeshes.push(new THREE.Mesh(geom, materialPool.getLocalRoadColor(layer.color)));
+  }
 
-  const hwFillMeshes = buildColorMeshes(hwFillColors, {
-    polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
-  });
+  // Highway casing
+  const hwCasingMeshes: THREE.Mesh[] = [];
+  for (const layer of cached.hwCasing) {
+    const geom = geometryFromArrays(layer.positions, layer.indices);
+    hwCasingMeshes.push(new THREE.Mesh(geom, materialPool.getHighwayRoadColor(layer.color)));
+  }
 
-  // --- Highway mask (invisible, writes stencil) ---
+  // Highway fill
+  const hwFillMeshes: THREE.Mesh[] = [];
+  for (const layer of cached.hwFill) {
+    const geom = geometryFromArrays(layer.positions, layer.indices);
+    hwFillMeshes.push(new THREE.Mesh(geom, materialPool.getHighwayRoadColor(layer.color)));
+  }
+
+  // Highway mask
   let highwayMask: THREE.Object3D | null = null;
-  if (hwMaskGeoms.length > 0) {
-    const merged = mergeGeometries(hwMaskGeoms, false);
-    for (const g of hwMaskGeoms) g.dispose();
-    if (merged) {
-      merged.computeBoundingSphere();
-      const mat = new THREE.MeshBasicMaterial({
-        colorWrite: false,
-        depthWrite: false,
-        depthTest: false,
-        stencilWrite: true,
-        stencilRef: 1,
-        stencilFunc: THREE.AlwaysStencilFunc,
-        stencilZPass: THREE.ReplaceStencilOp,
-        stencilFail: THREE.KeepStencilOp,
-        stencilZFail: THREE.KeepStencilOp,
-        side: THREE.DoubleSide,
-      });
-      const mesh = new THREE.Mesh(merged, mat);
-      mesh.renderOrder = 0;
-      highwayMask = mesh;
-    }
+  if (cached.hwMask) {
+    const geom = geometryFromArrays(cached.hwMask.positions, cached.hwMask.indices);
+    const mesh = new THREE.Mesh(geom, materialPool.getHighwayMask());
+    mesh.renderOrder = 0;
+    highwayMask = mesh;
   }
 
-  // --- Highway shadow (semi-transparent dark outline) ---
+  // Highway shadow
   let highwayShadow: THREE.Object3D | null = null;
-  if (hwShadowGeoms.length > 0) {
-    const merged = mergeGeometries(hwShadowGeoms, false);
-    for (const g of hwShadowGeoms) g.dispose();
-    if (merged) {
-      merged.computeBoundingSphere();
-      const mat = new THREE.MeshBasicMaterial({
-        color: SHADOW_COLOR,
-        transparent: true,
-        opacity: SHADOW_OPACITY,
-        depthWrite: false,
-        side: THREE.DoubleSide,
-      });
-      const mesh = new THREE.Mesh(merged, mat);
-      mesh.renderOrder = 2;
-      highwayShadow = mesh;
-    }
+  if (cached.hwShadow) {
+    const geom = geometryFromArrays(cached.hwShadow.positions, cached.hwShadow.indices);
+    const mesh = new THREE.Mesh(geom, materialPool.getHighwayShadow());
+    mesh.renderOrder = 2;
+    highwayShadow = mesh;
   }
 
-  // --- Local center line ---
+  // Local center line
   let localCenterLine: THREE.Object3D | null = null;
-  if (localCenterLineGeoms.length > 0) {
-    const merged = mergeGeometries(localCenterLineGeoms, false);
-    for (const g of localCenterLineGeoms) g.dispose();
-    if (merged) {
-      merged.computeBoundingSphere();
-      const mat = new THREE.MeshBasicMaterial({
-        color: CENTER_LINE_COLOR,
-        side: THREE.DoubleSide,
-        polygonOffset: true,
-        polygonOffsetFactor: -2,
-        polygonOffsetUnits: -2,
-        stencilWrite: false,
-        stencilFunc: THREE.NotEqualStencilFunc,
-        stencilRef: 1,
-        stencilFuncMask: 0xff,
-      });
-      const mesh = new THREE.Mesh(merged, mat);
-      mesh.renderOrder = 1;
-      localCenterLine = mesh;
-    }
+  if (cached.localCenterLine) {
+    const geom = geometryFromArrays(cached.localCenterLine.positions, cached.localCenterLine.indices);
+    const mesh = new THREE.Mesh(geom, materialPool.getLocalCenterLine());
+    mesh.renderOrder = 1;
+    localCenterLine = mesh;
   }
 
-  // --- Highway center line ---
+  // Highway center line
   let highwayCenterLine: THREE.Object3D | null = null;
-  if (hwCenterLineGeoms.length > 0) {
-    const merged = mergeGeometries(hwCenterLineGeoms, false);
-    for (const g of hwCenterLineGeoms) g.dispose();
-    if (merged) {
-      merged.computeBoundingSphere();
-      const mat = new THREE.MeshBasicMaterial({
-        color: CENTER_LINE_COLOR,
-        side: THREE.DoubleSide,
-        polygonOffset: true,
-        polygonOffsetFactor: -2,
-        polygonOffsetUnits: -2,
-      });
-      const mesh = new THREE.Mesh(merged, mat);
-      mesh.renderOrder = 3;
-      highwayCenterLine = mesh;
-    }
+  if (cached.hwCenterLine) {
+    const geom = geometryFromArrays(cached.hwCenterLine.positions, cached.hwCenterLine.indices);
+    const mesh = new THREE.Mesh(geom, materialPool.getHighwayCenterLine());
+    mesh.renderOrder = 3;
+    highwayCenterLine = mesh;
   }
 
-  // --- Assemble local groups with renderOrder ---
   const localCasing = assembleGroup(localCasingMeshes, 1);
   const localFill = assembleGroup(localFillMeshes, 1);
-
   const hwCasing = assembleGroup(hwCasingMeshes, 3);
   const hwFill = assembleGroup(hwFillMeshes, 3);
 
   return {
-    localCasing: localCasing,
-    localFill: localFill,
-    localCenterLine: localCenterLine,
-    highwayMask: highwayMask,
-    highwayShadow: highwayShadow,
+    localCasing,
+    localFill,
+    localCenterLine,
+    highwayMask,
+    highwayShadow,
     highwayCasing: hwCasing,
     highwayFill: hwFill,
-    highwayCenterLine: highwayCenterLine,
+    highwayCenterLine,
   };
 }
 
-interface MaterialOptions {
-  polygonOffset?: boolean;
-  polygonOffsetFactor?: number;
-  polygonOffsetUnits?: number;
-  stencilWrite?: boolean;
-  stencilFunc?: THREE.StencilFunc;
-  stencilRef?: number;
-  stencilFuncMask?: number;
-}
-
-function buildColorMeshes(
-  colorMap: Map<number, THREE.BufferGeometry[]>,
-  opts: MaterialOptions
-): THREE.Mesh[] {
-  const meshes: THREE.Mesh[] = [];
-  for (const [color, geoms] of colorMap) {
-    if (geoms.length === 0) continue;
-    const merged = mergeGeometries(geoms, false);
-    for (const g of geoms) g.dispose();
-    if (!merged) continue;
-    merged.computeBoundingSphere();
-    const mat = new THREE.MeshBasicMaterial({
-      color,
-      side: THREE.DoubleSide,
-      polygonOffset: opts.polygonOffset,
-      polygonOffsetFactor: opts.polygonOffsetFactor,
-      polygonOffsetUnits: opts.polygonOffsetUnits,
-    });
-    if (opts.stencilFunc !== undefined) {
-      mat.stencilWrite = opts.stencilWrite ?? false;
-      mat.stencilFunc = opts.stencilFunc;
-      mat.stencilRef = opts.stencilRef ?? 0;
-      mat.stencilFuncMask = opts.stencilFuncMask ?? 0xff;
-      mat.stencilFail = THREE.KeepStencilOp;
-      mat.stencilZFail = THREE.KeepStencilOp;
-      mat.stencilZPass = THREE.KeepStencilOp;
-    }
-    meshes.push(new THREE.Mesh(merged, mat));
-  }
-  return meshes;
+export function createRoadMeshes(
+  roads: RoadData[],
+  zoomLevel: number
+): RoadMeshResult {
+  const cached = buildRoadGeometryArrays(roads, zoomLevel);
+  return createRoadMeshesFromArrays(cached);
 }
 
 function assembleGroup(meshes: THREE.Mesh[], renderOrder: number): THREE.Object3D | null {
@@ -505,6 +453,7 @@ export function disposeObject(obj: THREE.Object3D) {
       const materials = Array.isArray(child.material) ? child.material : [child.material];
       for (const m of materials) {
         if (!m) continue;
+        if (m.userData?.shared) continue;
         if (m instanceof THREE.MeshBasicMaterial && m.map) {
           m.map.dispose();
         }

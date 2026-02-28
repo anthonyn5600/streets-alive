@@ -220,8 +220,22 @@ export const HIGHWAY_MASK_EXTRA = 4;
 export const HIGHWAY_SHADOW_EXTRA = 8;
 
 export function getLaneOffset(roadType: string): number {
-  if (!isDividedRoad(roadType)) return 0;
   const style = ROAD_STYLES[roadType];
   if (!style) return 0;
-  return style.fillWidth * 0.3;
+  if (isDividedRoad(roadType)) {
+    return style.fillWidth * 0.3;
+  }
+  return style.fillWidth * 0.25;
+}
+
+export function getCasingWidth(roadType: string): number {
+  return ROAD_STYLES[roadType]?.casingWidth ?? 11;
+}
+
+export function getParkingOffset(roadType: string): number {
+  const style = ROAD_STYLES[roadType];
+  if (!style || !style.casingWidth) return 0;
+  // Park car with outer edge 0.15m inside casing edge
+  // carHalfWidth=1m (BoxGeometry width=2)
+  return style.casingWidth / 2 - 1 - 0.15;
 }

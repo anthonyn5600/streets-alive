@@ -22,9 +22,7 @@ export {
 } from './style';
 
 export { RoadGraph, SPEED_WEIGHTS } from './graph';
-export type { GraphNode, GraphEdge } from './graph';
-
-export { createRoadLabels } from './labels';
+export type { GraphNode, GraphEdge, IndexedBuilding } from './graph';
 
 export {
   computeHighwayElevations,

@@ -26,6 +26,17 @@ export function project(latlng: LatLng): Point2D {
   return { x, z };
 }
 
+export interface ProjectionConstants {
+  centerLat: number;
+  centerLng: number;
+  cosCenter: number;
+  centerMercY: number;
+}
+
+export function getProjectionConstants(): ProjectionConstants {
+  return { centerLat, centerLng, cosCenter, centerMercY };
+}
+
 export function unproject(point: Point2D): LatLng {
   const lng = centerLng + point.x / (EARTH_RADIUS * DEG2RAD * cosCenter);
   const mercY = centerMercY - point.z;

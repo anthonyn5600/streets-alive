@@ -12,22 +12,20 @@ const PRESETS: Record<string, [number, number]> = {
   'Sacramento': [38.5816, -121.4944],
 };
 
-interface SearchBarProps {
+interface SearchSectionProps {
   engine: MapEngine | null;
 }
 
-export function SearchBar({ engine }: SearchBarProps) {
+export function SearchSection({ engine }: SearchSectionProps) {
   const [value, setValue] = useState('');
 
   const handleGo = () => {
-    // Check presets first
     for (const [name, coords] of Object.entries(PRESETS)) {
       if (value.toLowerCase().includes(name.toLowerCase())) {
         engine?.flyTo(coords[0], coords[1]);
         return;
       }
     }
-    // Try lat,lng
     const parts = value.split(',').map(s => s.trim());
     if (parts.length === 2) {
       const lat = parseFloat(parts[0]);
@@ -38,28 +36,24 @@ export function SearchBar({ engine }: SearchBarProps) {
     }
   };
 
-  const goTo = (lat: number, lng: number) => {
-    engine?.flyTo(lat, lng);
-  };
-
   return (
-    <div className="flex flex-col gap-2">
+    <div className="px-3 pb-2 space-y-2">
       <div className="flex gap-2">
         <Input
           placeholder="lat, lng or city name"
           value={value}
           onChange={e => setValue(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleGo()}
-          className="bg-white/90 backdrop-blur-sm shadow-md text-sm"
+          className="h-8 text-sm"
         />
-        <Button size="sm" onClick={handleGo} className="shadow-md">Go</Button>
+        <Button size="sm" onClick={handleGo} className="h-8 px-3">Go</Button>
       </div>
       <div className="flex flex-wrap gap-1">
         {Object.entries(PRESETS).map(([name, [lat, lng]]) => (
           <button
             key={name}
-            onClick={() => goTo(lat, lng)}
-            className="text-[10px] px-1.5 py-0.5 bg-white/80 backdrop-blur-sm rounded shadow-sm hover:bg-white transition-colors border border-border"
+            onClick={() => engine?.flyTo(lat, lng)}
+            className="text-[10px] px-1.5 py-0.5 bg-muted rounded hover:bg-accent transition-colors"
           >
             {name}
           </button>

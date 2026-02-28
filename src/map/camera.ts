@@ -4,6 +4,9 @@ import { unproject } from './projection';
 import { throttle } from '@/lib/utils';
 import type { BBox, LatLng } from './types';
 
+const _ndc = new THREE.Vector2();
+const _hit = new THREE.Vector3();
+
 export class MapCameraController {
   camera: THREE.PerspectiveCamera;
   controls: OrbitControls;
@@ -13,7 +16,7 @@ export class MapCameraController {
   private throttledChange: (() => void) | null = null;
 
   constructor(canvas: HTMLCanvasElement, width: number, height: number) {
-    this.camera = new THREE.PerspectiveCamera(60, width / height, 1, 50000);
+    this.camera = new THREE.PerspectiveCamera(60, width / height, 10, 50000);
     // Start nearly top-down for a good initial view
     this.camera.position.set(0, 500, 50);
 
@@ -67,49 +70,38 @@ export class MapCameraController {
     // Sample 16 points around viewport perimeter to capture frustum projection
     // on the ground plane. 4 corners alone miss edge midpoints that can bulge
     // outward when the camera is tilted/rotated.
-    const samplePoints = [
-      new THREE.Vector2(-1, -1),
-      new THREE.Vector2(1, -1),
-      new THREE.Vector2(1, 1),
-      new THREE.Vector2(-1, 1),
-      new THREE.Vector2(0, -1),
-      new THREE.Vector2(1, 0),
-      new THREE.Vector2(0, 1),
-      new THREE.Vector2(-1, 0),
-      new THREE.Vector2(-0.5, -1),
-      new THREE.Vector2(0.5, -1),
-      new THREE.Vector2(-0.5, 1),
-      new THREE.Vector2(0.5, 1),
-      new THREE.Vector2(-1, -0.5),
-      new THREE.Vector2(-1, 0.5),
-      new THREE.Vector2(1, -0.5),
-      new THREE.Vector2(1, 0.5),
+    const sampleNdcs: Array<[number, number]> = [
+      [-1, -1], [1, -1], [1, 1], [-1, 1],
+      [0, -1], [1, 0], [0, 1], [-1, 0],
+      [-0.5, -1], [0.5, -1], [-0.5, 1], [0.5, 1],
+      [-1, -0.5], [-1, 0.5], [1, -0.5], [1, 0.5],
     ];
 
     const target = this.controls.target;
     const dist = this.camera.position.distanceTo(target);
-    const maxRadius = Math.max(dist * 1.5, 2500);
+    const maxRadius = dist * 1.0;
 
     let minX = Infinity, maxX = -Infinity;
     let minZ = Infinity, maxZ = -Infinity;
     let hitCount = 0;
 
-    for (const pt of samplePoints) {
-      this.raycaster.setFromCamera(pt, this.camera);
-      const hit = new THREE.Vector3();
-      const result = this.raycaster.ray.intersectPlane(this.ground, hit);
+    for (const [sx, sy] of sampleNdcs) {
+      _ndc.set(sx, sy);
+      this.raycaster.setFromCamera(_ndc, this.camera);
+      const result = this.raycaster.ray.intersectPlane(this.ground, _hit);
       if (result) {
-        const dx = hit.x - target.x;
-        const dz = hit.z - target.z;
+        const dx = _hit.x - target.x;
+        const dz = _hit.z - target.z;
         const d = Math.sqrt(dx * dx + dz * dz);
+        let hx = _hit.x, hz = _hit.z;
         if (d > maxRadius) {
-          hit.x = target.x + (dx / d) * maxRadius;
-          hit.z = target.z + (dz / d) * maxRadius;
+          hx = target.x + (dx / d) * maxRadius;
+          hz = target.z + (dz / d) * maxRadius;
         }
-        minX = Math.min(minX, hit.x);
-        maxX = Math.max(maxX, hit.x);
-        minZ = Math.min(minZ, hit.z);
-        maxZ = Math.max(maxZ, hit.z);
+        minX = Math.min(minX, hx);
+        maxX = Math.max(maxX, hx);
+        minZ = Math.min(minZ, hz);
+        maxZ = Math.max(maxZ, hz);
         hitCount++;
       }
     }
@@ -135,15 +127,14 @@ export class MapCameraController {
   }
 
   getCursorLatLng(mouseX: number, mouseY: number, canvasWidth: number, canvasHeight: number): LatLng | null {
-    const ndc = new THREE.Vector2(
+    _ndc.set(
       (mouseX / canvasWidth) * 2 - 1,
       -(mouseY / canvasHeight) * 2 + 1
     );
-    this.raycaster.setFromCamera(ndc, this.camera);
-    const hit = new THREE.Vector3();
-    const result = this.raycaster.ray.intersectPlane(this.ground, hit);
+    this.raycaster.setFromCamera(_ndc, this.camera);
+    const result = this.raycaster.ray.intersectPlane(this.ground, _hit);
     if (!result) return null;
-    return unproject({ x: hit.x, z: hit.z });
+    return unproject({ x: _hit.x, z: _hit.z });
   }
 
   flyTo(x: number, z: number, duration = 1000): Promise<void> {

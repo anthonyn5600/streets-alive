@@ -1,11 +1,11 @@
 import { useState, useCallback, useEffect } from 'react';
 import { MapCanvas } from '@/components/MapCanvas';
-import { Sidebar } from '@/components/Sidebar';
-import { StatusBar } from '@/components/StatusBar';
-import { SearchBar } from '@/components/SearchBar';
-import { DriverPanel } from '@/components/DriverPanel';
+import { AppSidebar } from '@/components/AppSidebar';
+import { StatusPill } from '@/components/StatusPill';
+import { RuntimeTestPanel } from '@/components/RuntimeTestPanel';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import type { MapEngine } from '@/map/engine';
-import type { CarInfo, MapState } from '@/map/types';
+import type { SimCarInfo, HouseholdInfo, MapState, RuntimeTestResult } from '@/map/types';
 
 const defaultState: MapState = {
   loading: false,
@@ -19,7 +19,10 @@ const defaultState: MapState = {
 function App() {
   const [engine, setEngine] = useState<MapEngine | null>(null);
   const [mapState, setMapState] = useState<MapState>(defaultState);
-  const [cars, setCars] = useState<CarInfo[]>([]);
+  const [cars, setCars] = useState<SimCarInfo[]>([]);
+  const [households, setHouseholds] = useState<HouseholdInfo[]>([]);
+  const [testResults, setTestResults] = useState<RuntimeTestResult[]>([]);
+  const [showTests, setShowTests] = useState(false);
 
   const handleEngineReady = useCallback((eng: MapEngine) => {
     setEngine(eng);
@@ -32,19 +35,41 @@ function App() {
   useEffect(() => {
     if (!engine) return;
     engine.setOnCarStateChange(setCars);
-    return () => engine.setOnCarStateChange(() => {});
+    engine.setOnHouseholdChange(setHouseholds);
+    engine.setOnTestResults(setTestResults);
+    engine.setParkingDebug(false);
+    return () => {
+      engine.setOnCarStateChange(() => {});
+      engine.setOnHouseholdChange(() => {});
+      engine.setOnTestResults(() => {});
+    };
   }, [engine]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'T') {
+        e.preventDefault();
+        setShowTests(prev => !prev);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
-    <div className="relative w-full h-full">
-      <MapCanvas onEngineReady={handleEngineReady} onStateChange={handleStateChange} />
-      <div className="absolute top-4 left-4 z-10 flex flex-col gap-3 w-72">
-        <SearchBar engine={engine} />
-        <Sidebar engine={engine} />
+    <TooltipProvider>
+      <div className="relative w-full h-full">
+        <MapCanvas onEngineReady={handleEngineReady} onStateChange={handleStateChange} />
+        <AppSidebar engine={engine} cars={cars} households={households} />
+        <RuntimeTestPanel results={testResults} visible={showTests} />
+        <StatusPill
+          mapState={mapState}
+          engine={engine}
+          testResults={testResults}
+          onToggleTests={() => setShowTests(prev => !prev)}
+        />
       </div>
-      <DriverPanel engine={engine} cars={cars} />
-      <StatusBar mapState={mapState} engine={engine} />
-    </div>
+    </TooltipProvider>
   );
 }
 

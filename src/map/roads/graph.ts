@@ -1,7 +1,9 @@
-import { project } from '../projection';
+import { project, unproject } from '../projection';
 import {
+  getCasingWidth,
   getLaneOffset,
   isDefaultOneway,
+  isHighwayType,
 } from './style';
 import { computeMiterNormals } from './renderer';
 import type { BuildingData, RoadData } from '../types';
@@ -42,15 +44,103 @@ export const SPEED_WEIGHTS: Record<string, number> = {
   service_link: 0.25,
 };
 
-interface IndexedBuilding {
+export interface IndexedBuilding {
+  buildingId: number;
   centroidX: number;
   centroidZ: number;
   nearestNodeId: number;
+  roadDirX: number;
+  roadDirZ: number;
+  roadType: string;
 }
 
 const CLUSTER_TOLERANCE = 10; // meters
 const MIN_SPAWN_SPEED = 0.55;
-const MAX_BUILDING_NODE_DIST_SQ = 100 * 100;
+const MAX_BUILDING_NODE_DIST_SQ = 35 * 35;
+const SNAP_THRESHOLD = 2; // meters -- snap to existing endpoint instead of splitting
+const MIN_SUBEDGE_LEN = 1; // meters -- skip sub-edges shorter than this
+
+interface ProjectionResult {
+  x: number;
+  z: number;
+  segIndex: number;
+  t: number;
+  distSq: number;
+}
+
+function projectOnPolyline(
+  px: number,
+  pz: number,
+  pts: Array<{ x: number; z: number }>
+): ProjectionResult | null {
+  if (pts.length < 2) return null;
+  let bestDistSq = Infinity;
+  let bestX = 0, bestZ = 0, bestSeg = 0, bestT = 0;
+
+  for (let i = 0; i < pts.length - 1; i++) {
+    const ax = pts[i].x, az = pts[i].z;
+    const bx = pts[i + 1].x, bz = pts[i + 1].z;
+    const abx = bx - ax, abz = bz - az;
+    const ab2 = abx * abx + abz * abz;
+    if (ab2 < 0.0001) continue;
+    const t = Math.max(0, Math.min(1, ((px - ax) * abx + (pz - az) * abz) / ab2));
+    const cx = ax + t * abx, cz = az + t * abz;
+    const dx = px - cx, dz = pz - cz;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < bestDistSq) {
+      bestDistSq = d2;
+      bestX = cx;
+      bestZ = cz;
+      bestSeg = i;
+      bestT = t;
+    }
+  }
+
+  if (bestDistSq === Infinity) return null;
+  return { x: bestX, z: bestZ, segIndex: bestSeg, t: bestT, distSq: bestDistSq };
+}
+
+function slideAwayFromEndpoint(
+  wp: Array<{ x: number; y: number; z: number }>,
+  fromStart: boolean,
+  distance: number
+): { x: number; z: number; segIndex: number; t: number } | null {
+  if (fromStart) {
+    let acc = 0;
+    for (let i = 0; i < wp.length - 1; i++) {
+      const dx = wp[i + 1].x - wp[i].x, dz = wp[i + 1].z - wp[i].z;
+      const segLen = Math.sqrt(dx * dx + dz * dz);
+      if (acc + segLen >= distance) {
+        const t = (distance - acc) / segLen;
+        return { x: wp[i].x + dx * t, z: wp[i].z + dz * t, segIndex: i, t };
+      }
+      acc += segLen;
+    }
+    return null;
+  } else {
+    let acc = 0;
+    for (let i = wp.length - 1; i > 0; i--) {
+      const dx = wp[i - 1].x - wp[i].x, dz = wp[i - 1].z - wp[i].z;
+      const segLen = Math.sqrt(dx * dx + dz * dz);
+      if (acc + segLen >= distance) {
+        const rem = (distance - acc) / segLen;
+        return { x: wp[i].x + dx * rem, z: wp[i].z + dz * rem, segIndex: i - 1, t: 1 - rem };
+      }
+      acc += segLen;
+    }
+    return null;
+  }
+}
+
+function computePolylineDist(pts: Array<{ x: number; z: number }>): number {
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i].x - pts[i - 1].x;
+    const dz = pts[i].z - pts[i - 1].z;
+    total += Math.sqrt(dx * dx + dz * dz);
+  }
+  return total;
+}
 
 function offsetWaypointsRight(
   pts: Array<{ x: number; y: number; z: number }>,
@@ -71,6 +161,60 @@ function offsetWaypointsRight(
   return result;
 }
 
+class MinHeap {
+  private heap: Array<{ node: number; cost: number }> = [];
+
+  insert(node: number, cost: number) {
+    this.heap.push({ node, cost });
+    this.siftUp(this.heap.length - 1);
+  }
+
+  extractMin(): { node: number; cost: number } | null {
+    const heap = this.heap;
+    if (heap.length === 0) return null;
+    const min = heap[0];
+    const last = heap.pop()!;
+    if (heap.length > 0) {
+      heap[0] = last;
+      this.siftDown(0);
+    }
+    return min;
+  }
+
+  isEmpty(): boolean {
+    return this.heap.length === 0;
+  }
+
+  private siftUp(i: number) {
+    const heap = this.heap;
+    while (i > 0) {
+      const parent = (i - 1) >> 1;
+      if (heap[i].cost >= heap[parent].cost) break;
+      const tmp = heap[i];
+      heap[i] = heap[parent];
+      heap[parent] = tmp;
+      i = parent;
+    }
+  }
+
+  private siftDown(i: number) {
+    const heap = this.heap;
+    const n = heap.length;
+    while (true) {
+      let smallest = i;
+      const left = 2 * i + 1;
+      const right = 2 * i + 2;
+      if (left < n && heap[left].cost < heap[smallest].cost) smallest = left;
+      if (right < n && heap[right].cost < heap[smallest].cost) smallest = right;
+      if (smallest === i) break;
+      const tmp = heap[i];
+      heap[i] = heap[smallest];
+      heap[smallest] = tmp;
+      i = smallest;
+    }
+  }
+}
+
 export class RoadGraph {
   nodes: GraphNode[] = [];
   adjacency: Map<number, GraphEdge[]> = new Map();
@@ -78,12 +222,16 @@ export class RoadGraph {
   private connectedNodes: number[] = [];
   private carSpawnNodes: number[] = [];
   private indexedBuildings: IndexedBuilding[] = [];
+  private intersectionNodes = new Set<number>();
+  private spatialGrid = new Map<string, number[]>();
+  private spatialCellSize = 100;
 
   build(roads: RoadData[]) {
     this.nodes = [];
     this.adjacency = new Map();
     this.grid = new Map();
     this.indexedBuildings = [];
+    this.intersectionNodes = new Set();
 
     for (const road of roads) {
       if (road.points.length < 2) continue;
@@ -147,6 +295,78 @@ export class RoadGraph {
       const edges = this.adjacency.get(nodeId);
       return edges?.some(e => (SPEED_WEIGHTS[e.roadType] ?? 0) >= MIN_SPAWN_SPEED) ?? false;
     });
+
+    // Precompute intersection nodes using bidirectional neighbor counting
+    // (outgoing-only misses one-way roads leading into a junction)
+    const biNeighbors = new Map<number, Set<number>>();
+    for (const [nodeId, edges] of this.adjacency) {
+      for (const e of edges) {
+        if (!biNeighbors.has(e.from)) biNeighbors.set(e.from, new Set());
+        if (!biNeighbors.has(e.to)) biNeighbors.set(e.to, new Set());
+        biNeighbors.get(e.from)!.add(e.to);
+        biNeighbors.get(e.to)!.add(e.from);
+      }
+    }
+    for (const [nodeId, neighbors] of biNeighbors) {
+      if (neighbors.size >= 3) this.intersectionNodes.add(nodeId);
+    }
+
+    this.buildSpatialGrid();
+  }
+
+  private buildSpatialGrid() {
+    this.spatialGrid = new Map();
+    const cell = this.spatialCellSize;
+    for (const node of this.nodes) {
+      const key = `${Math.floor(node.x / cell)},${Math.floor(node.z / cell)}`;
+      let bucket = this.spatialGrid.get(key);
+      if (!bucket) { bucket = []; this.spatialGrid.set(key, bucket); }
+      bucket.push(node.id);
+    }
+  }
+
+  private addToSpatialGrid(nodeId: number) {
+    const node = this.nodes[nodeId];
+    const cell = this.spatialCellSize;
+    const key = `${Math.floor(node.x / cell)},${Math.floor(node.z / cell)}`;
+    let bucket = this.spatialGrid.get(key);
+    if (!bucket) { bucket = []; this.spatialGrid.set(key, bucket); }
+    bucket.push(nodeId);
+  }
+
+  findNearestNode(x: number, z: number): number | null {
+    const cell = this.spatialCellSize;
+    const cx = Math.floor(x / cell);
+    const cz = Math.floor(z / cell);
+
+    let best = -1;
+    let bestDist = Infinity;
+
+    // Check 3x3 neighborhood first
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const bucket = this.spatialGrid.get(`${cx + dx},${cz + dz}`);
+        if (!bucket) continue;
+        for (const nodeId of bucket) {
+          const node = this.nodes[nodeId];
+          const ddx = node.x - x;
+          const ddz = node.z - z;
+          const d = ddx * ddx + ddz * ddz;
+          if (d < bestDist) { bestDist = d; best = nodeId; }
+        }
+      }
+    }
+
+    if (best !== -1) return best;
+
+    // Fallback: full scan (no nodes nearby)
+    for (const node of this.nodes) {
+      const ddx = node.x - x;
+      const ddz = node.z - z;
+      const d = ddx * ddx + ddz * ddz;
+      if (d < bestDist) { bestDist = d; best = node.id; }
+    }
+    return best === -1 ? null : best;
   }
 
   private getOrCreateNode(p: { lat: number; lng: number; x: number; z: number }): number {
@@ -163,6 +383,105 @@ export class RoadGraph {
     return id;
   }
 
+  private isIntersectionNode(nodeId: number): boolean {
+    return this.intersectionNodes.has(nodeId);
+  }
+
+  private insertParkingNode(
+    edge: GraphEdge,
+    proj: ProjectionResult
+  ): number {
+    const fromNode = this.nodes[edge.from];
+    const toNode = this.nodes[edge.to];
+
+    // Snap guard: if projection is within SNAP_THRESHOLD of an endpoint, return that node
+    // Skip intersection nodes (3+ neighbors) to avoid parking in junctions
+    const dxFrom = proj.x - fromNode.x, dzFrom = proj.z - fromNode.z;
+    if (dxFrom * dxFrom + dzFrom * dzFrom < SNAP_THRESHOLD * SNAP_THRESHOLD) {
+      if (!this.isIntersectionNode(edge.from)) return edge.from;
+    }
+    const dxTo = proj.x - toNode.x, dzTo = proj.z - toNode.z;
+    if (dxTo * dxTo + dzTo * dzTo < SNAP_THRESHOLD * SNAP_THRESHOLD) {
+      if (!this.isIntersectionNode(edge.to)) return edge.to;
+    }
+
+    // Create parking node
+    const parkingLatLng = unproject({ x: proj.x, z: proj.z });
+    const parkingId = this.nodes.length;
+    this.nodes.push({ id: parkingId, lat: parkingLatLng.lat, lng: parkingLatLng.lng, x: proj.x, z: proj.z });
+
+    // Split waypoints at projection point
+    const wp = edge.waypoints;
+    const splitPt = { x: proj.x, y: 0, z: proj.z };
+
+    // First half: waypoints[0..segIndex] + splitPt
+    const wpA: Array<{ x: number; y: number; z: number }> = [];
+    for (let i = 0; i <= proj.segIndex; i++) wpA.push(wp[i]);
+    if (proj.t > 0.001) wpA.push(splitPt);
+
+    // Second half: splitPt + waypoints[segIndex+1..end]
+    const wpB: Array<{ x: number; y: number; z: number }> = [splitPt];
+    if (proj.t < 0.999) {
+      for (let i = proj.segIndex + 1; i < wp.length; i++) wpB.push(wp[i]);
+    } else {
+      for (let i = proj.segIndex + 2; i < wp.length; i++) wpB.push(wp[i]);
+    }
+
+    const distA = computePolylineDist(wpA);
+    const distB = computePolylineDist(wpB);
+    const speed = SPEED_WEIGHTS[edge.roadType] ?? 0.5;
+
+    // Remove forward edge from→to
+    const fwdEdges = this.adjacency.get(edge.from);
+    if (fwdEdges) {
+      const idx = fwdEdges.indexOf(edge);
+      if (idx !== -1) fwdEdges.splice(idx, 1);
+    }
+
+    // Add sub-edges for forward direction
+    if (!this.adjacency.has(parkingId)) this.adjacency.set(parkingId, []);
+
+    if (wpA.length >= 2 && distA >= MIN_SUBEDGE_LEN) {
+      this.adjacency.get(edge.from)!.push({
+        from: edge.from, to: parkingId, distance: distA,
+        cost: distA / speed, roadType: edge.roadType, waypoints: wpA,
+      });
+    }
+    if (wpB.length >= 2 && distB >= MIN_SUBEDGE_LEN) {
+      this.adjacency.get(parkingId)!.push({
+        from: parkingId, to: edge.to, distance: distB,
+        cost: distB / speed, roadType: edge.roadType, waypoints: wpB,
+      });
+    }
+
+    // Check for reverse edge (bidirectional road)
+    const revEdges = this.adjacency.get(edge.to);
+    if (revEdges) {
+      const revIdx = revEdges.findIndex(e => e.to === edge.from && e.roadType === edge.roadType);
+      if (revIdx !== -1) {
+        revEdges.splice(revIdx, 1);
+        const wpBRev = [...wpB].reverse();
+        const wpARev = [...wpA].reverse();
+        if (wpBRev.length >= 2 && distB >= MIN_SUBEDGE_LEN) {
+          revEdges.push({
+            from: edge.to, to: parkingId, distance: distB,
+            cost: distB / speed, roadType: edge.roadType, waypoints: wpBRev,
+          });
+        }
+        if (wpARev.length >= 2 && distA >= MIN_SUBEDGE_LEN) {
+          this.adjacency.get(parkingId)!.push({
+            from: parkingId, to: edge.from, distance: distA,
+            cost: distA / speed, roadType: edge.roadType, waypoints: wpARev,
+          });
+        }
+      }
+    }
+
+    this.connectedNodes.push(parkingId);
+    this.addToSpatialGrid(parkingId);
+    return parkingId;
+  }
+
   dijkstra(startId: number, endId: number): number[] | null {
     if (startId === endId) return null;
     if (!this.adjacency.has(startId) || !this.adjacency.has(endId)) return null;
@@ -171,17 +490,12 @@ export class RoadGraph {
     const prev = new Int32Array(this.nodes.length).fill(-1);
     dist[startId] = 0;
 
-    // Priority queue (linear scan -- sufficient for our graph size)
-    const heap: Array<{ cost: number; node: number }> = [{ cost: 0, node: startId }];
+    const heap = new MinHeap();
+    heap.insert(startId, 0);
 
-    while (heap.length > 0) {
-      let minIdx = 0;
-      for (let i = 1; i < heap.length; i++) {
-        if (heap[i].cost < heap[minIdx].cost) minIdx = i;
-      }
-      const { cost, node } = heap[minIdx];
-      heap[minIdx] = heap[heap.length - 1];
-      heap.pop();
+    while (!heap.isEmpty()) {
+      const entry = heap.extractMin()!;
+      const { node, cost } = entry;
 
       if (node === endId) break;
       if (cost > dist[node]) continue;
@@ -194,7 +508,7 @@ export class RoadGraph {
         if (newCost < dist[edge.to]) {
           dist[edge.to] = newCost;
           prev[edge.to] = node;
-          heap.push({ cost: newCost, node: edge.to });
+          heap.insert(edge.to, newCost);
         }
       }
     }
@@ -292,7 +606,7 @@ export class RoadGraph {
     if (this.connectedNodes.length === 0) return;
 
     // Build a grid of connected nodes for O(1) spatial lookup
-    const CELL = 100; // meters per cell, matches MAX_BUILDING_NODE_DIST
+    const CELL = 100;
     const nodeGrid = new Map<string, number[]>();
     for (const nodeId of this.connectedNodes) {
       const node = this.nodes[nodeId];
@@ -302,6 +616,17 @@ export class RoadGraph {
       let bucket = nodeGrid.get(key);
       if (!bucket) { bucket = []; nodeGrid.set(key, bucket); }
       bucket.push(nodeId);
+    }
+
+    // Dedicated intersection grid: includes ALL intersection nodes
+    // (not filtered by connectedNodes, fixing sink-node gap)
+    const INT_CELL = 50;
+    const intNodeGrid = new Map<string, Array<{ x: number; z: number }>>();
+    for (const nodeId of this.intersectionNodes) {
+      const n = this.nodes[nodeId];
+      const key = `${Math.floor(n.x / INT_CELL)},${Math.floor(n.z / INT_CELL)}`;
+      if (!intNodeGrid.has(key)) intNodeGrid.set(key, []);
+      intNodeGrid.get(key)!.push({ x: n.x, z: n.z });
     }
 
     for (const b of buildings) {
@@ -315,40 +640,300 @@ export class RoadGraph {
 
       const cx = Math.floor(centroid.x / CELL);
       const cz = Math.floor(centroid.z / CELL);
-      let bestDist = Infinity;
-      let bestNode = -1;
 
-      // Search 3x3 neighborhood of grid cells
+      // Collect nearby node IDs from 3x3 grid neighborhood
+      const nearbyNodes: number[] = [];
       for (let dx = -1; dx <= 1; dx++) {
         for (let dz = -1; dz <= 1; dz++) {
           const bucket = nodeGrid.get(`${cx + dx},${cz + dz}`);
-          if (!bucket) continue;
-          for (const nodeId of bucket) {
-            const node = this.nodes[nodeId];
-            const ddx = node.x - centroid.x;
-            const ddz = node.z - centroid.z;
-            const d2 = ddx * ddx + ddz * ddz;
-            if (d2 < bestDist) {
-              bestDist = d2;
-              bestNode = nodeId;
-            }
+          if (bucket) {
+            for (const nid of bucket) nearbyNodes.push(nid);
+          }
+        }
+      }
+      if (nearbyNodes.length === 0) continue;
+
+      // Iterate edges of nearby nodes, project centroid onto each edge polyline
+      let bestDistSq = Infinity;
+      let bestEdge: GraphEdge | null = null;
+      let bestProj: ProjectionResult | null = null;
+      const testedEdges = new Set<string>();
+      const allNearbyEdges: GraphEdge[] = [];
+
+      for (const nodeId of nearbyNodes) {
+        const edges = this.adjacency.get(nodeId);
+        if (!edges) continue;
+        for (const edge of edges) {
+          if (isHighwayType(edge.roadType)) continue;
+          const edgeKey = `${Math.min(edge.from, edge.to)}-${Math.max(edge.from, edge.to)}-${edge.roadType}`;
+          if (testedEdges.has(edgeKey)) continue;
+          testedEdges.add(edgeKey);
+          allNearbyEdges.push(edge);
+
+          const pts2d = edge.waypoints.map(w => ({ x: w.x, z: w.z }));
+          const proj = projectOnPolyline(centroid.x, centroid.z, pts2d);
+          if (proj && proj.distSq < bestDistSq) {
+            bestDistSq = proj.distSq;
+            bestEdge = edge;
+            bestProj = proj;
           }
         }
       }
 
-      if (bestNode !== -1 && bestDist < MAX_BUILDING_NODE_DIST_SQ) {
-        this.indexedBuildings.push({
-          centroidX: centroid.x,
-          centroidZ: centroid.z,
-          nearestNodeId: bestNode,
+      if (!bestEdge || !bestProj || bestDistSq >= MAX_BUILDING_NODE_DIST_SQ) continue;
+
+      // Layer 1: Lookup intersection nodes near PROJECTION point (dedicated grid)
+      const pCx = Math.floor(bestProj.x / INT_CELL);
+      const pCz = Math.floor(bestProj.z / INT_CELL);
+      const nearbyIntPositions: Array<{ x: number; z: number }> = [];
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const bucket = intNodeGrid.get(`${pCx + dx},${pCz + dz}`);
+          if (bucket) for (const pos of bucket) nearbyIntPositions.push(pos);
+        }
+      }
+
+      // Layer 2: Collect non-connected edges for cross-road check
+      const bestEdgeKey = `${Math.min(bestEdge.from, bestEdge.to)}-${Math.max(bestEdge.from, bestEdge.to)}`;
+      const crossEdges: Array<{ pts: Array<{ x: number; z: number }>; halfW: number }> = [];
+      for (const e of allNearbyEdges) {
+        const eKey = `${Math.min(e.from, e.to)}-${Math.max(e.from, e.to)}`;
+        if (eKey === bestEdgeKey) continue;
+        if (e.from === bestEdge.from || e.from === bestEdge.to ||
+            e.to === bestEdge.from || e.to === bestEdge.to) continue;
+        crossEdges.push({
+          pts: e.waypoints.map(w => ({ x: w.x, z: w.z })),
+          halfW: getCasingWidth(e.roadType) / 2,
         });
       }
+
+      const INTERSECTION_CLEARANCE = 20;
+      const INTERSECTION_CLEARANCE_SQ = INTERSECTION_CLEARANCE * INTERSECTION_CLEARANCE;
+
+      const isUnsafePosition = (x: number, z: number): boolean => {
+        for (const n of nearbyIntPositions) {
+          const ddx = x - n.x, ddz = z - n.z;
+          if (ddx * ddx + ddz * ddz < INTERSECTION_CLEARANCE_SQ) return true;
+        }
+        for (const ce of crossEdges) {
+          const proj = projectOnPolyline(x, z, ce.pts);
+          if (proj && proj.distSq < ce.halfW * ce.halfW) return true;
+        }
+        return false;
+      };
+
+      if (isUnsafePosition(bestProj.x, bestProj.z)) {
+        const wp = bestEdge.waypoints;
+        // Find which unsafe source is closest to the projection
+        let nearX = 0, nearZ = 0, nearDist = Infinity;
+        for (const n of nearbyIntPositions) {
+          const ddx = bestProj.x - n.x, ddz = bestProj.z - n.z;
+          const d2 = ddx * ddx + ddz * ddz;
+          if (d2 < nearDist) { nearDist = d2; nearX = n.x; nearZ = n.z; }
+        }
+        // Also check cross-road projection points as unsafe sources
+        for (const ce of crossEdges) {
+          const cp = projectOnPolyline(bestProj.x, bestProj.z, ce.pts);
+          if (cp && cp.distSq < nearDist) { nearDist = cp.distSq; nearX = cp.x; nearZ = cp.z; }
+        }
+        // Determine which edge end is closer to that unsafe source
+        const dxS = wp[0].x - nearX, dzS = wp[0].z - nearZ;
+        const dxE = wp[wp.length - 1].x - nearX, dzE = wp[wp.length - 1].z - nearZ;
+        const startCloser = (dxS * dxS + dzS * dzS) < (dxE * dxE + dzE * dzE);
+
+        // Try sliding away from the closer end first, then the other direction
+        let valid = false;
+        const slid1 = slideAwayFromEndpoint(wp, startCloser, INTERSECTION_CLEARANCE);
+        if (slid1 && !isUnsafePosition(slid1.x, slid1.z)) {
+          bestProj.x = slid1.x; bestProj.z = slid1.z;
+          bestProj.segIndex = slid1.segIndex; bestProj.t = slid1.t;
+          valid = true;
+        }
+        if (!valid) {
+          const slid2 = slideAwayFromEndpoint(wp, !startCloser, INTERSECTION_CLEARANCE);
+          if (slid2 && !isUnsafePosition(slid2.x, slid2.z)) {
+            bestProj.x = slid2.x; bestProj.z = slid2.z;
+            bestProj.segIndex = slid2.segIndex; bestProj.t = slid2.t;
+            valid = true;
+          }
+        }
+        if (!valid) continue;
+      }
+
+      // Insert parking node by splitting the edge
+      const parkingNodeId = this.insertParkingNode(bestEdge, bestProj);
+
+      // Compute road direction from the waypoint segment at projection
+      const wp = bestEdge.waypoints;
+      const si = bestProj.segIndex;
+      const rdx = wp[si + 1].x - wp[si].x;
+      const rdz = wp[si + 1].z - wp[si].z;
+      const rLen = Math.sqrt(rdx * rdx + rdz * rdz);
+      let dirX = rLen > 0.001 ? rdx / rLen : 1;
+      let dirZ = rLen > 0.001 ? rdz / rLen : 0;
+
+      // Flip roadDir so perpRight (-dirZ, dirX) faces toward the building
+      const perpX = -dirZ, perpZ = dirX;
+      const toBldgX = centroid.x - bestProj.x, toBldgZ = centroid.z - bestProj.z;
+      if (perpX * toBldgX + perpZ * toBldgZ < 0) {
+        dirX = -dirX; dirZ = -dirZ;
+      }
+
+      this.indexedBuildings.push({
+        buildingId: b.id,
+        centroidX: centroid.x,
+        centroidZ: centroid.z,
+        nearestNodeId: parkingNodeId,
+        roadDirX: dirX,
+        roadDirZ: dirZ,
+        roadType: bestEdge.roadType,
+      });
+    }
+
+    this.scanAndRemoveIntersectionParking();
+  }
+
+  private scanAndRemoveIntersectionParking(): void {
+    if (this.indexedBuildings.length === 0) return;
+
+    // Phase 1: Build spatial grid of all road segments
+    const SEG_CELL = 50;
+    const segGrid = new Map<string, Array<{
+      ax: number; az: number; bx: number; bz: number;
+      dirX: number; dirZ: number; halfCasing: number;
+    }>>();
+
+    const indexed = new Set<string>();
+    for (const [, edges] of this.adjacency) {
+      for (const edge of edges) {
+        if (isHighwayType(edge.roadType)) continue;
+        const eKey = `${Math.min(edge.from, edge.to)}-${Math.max(edge.from, edge.to)}-${edge.roadType}`;
+        if (indexed.has(eKey)) continue;
+        indexed.add(eKey);
+        const wp = edge.waypoints;
+        const halfCasing = getCasingWidth(edge.roadType) / 2;
+        for (let i = 0; i < wp.length - 1; i++) {
+          const ax = wp[i].x, az = wp[i].z;
+          const bx = wp[i + 1].x, bz = wp[i + 1].z;
+          const dx = bx - ax, dz = bz - az;
+          const len = Math.sqrt(dx * dx + dz * dz);
+          if (len < 0.01) continue;
+          const entry = { ax, az, bx, bz, dirX: dx / len, dirZ: dz / len, halfCasing };
+          const minCx = Math.floor(Math.min(ax, bx) / SEG_CELL);
+          const maxCx = Math.floor(Math.max(ax, bx) / SEG_CELL);
+          const minCz = Math.floor(Math.min(az, bz) / SEG_CELL);
+          const maxCz = Math.floor(Math.max(az, bz) / SEG_CELL);
+          for (let cx = minCx; cx <= maxCx; cx++) {
+            for (let cz = minCz; cz <= maxCz; cz++) {
+              const key = `${cx},${cz}`;
+              if (!segGrid.has(key)) segGrid.set(key, []);
+              segGrid.get(key)!.push(entry);
+            }
+          }
+        }
+      }
+    }
+
+    const isInIntersection = (px: number, pz: number, rdx: number, rdz: number): boolean => {
+      const cx = Math.floor(px / SEG_CELL);
+      const cz = Math.floor(pz / SEG_CELL);
+      for (let dcx = -1; dcx <= 1; dcx++) {
+        for (let dcz = -1; dcz <= 1; dcz++) {
+          const bucket = segGrid.get(`${cx + dcx},${cz + dcz}`);
+          if (!bucket) continue;
+          for (const seg of bucket) {
+            const sabx = seg.bx - seg.ax, sabz = seg.bz - seg.az;
+            const sab2 = sabx * sabx + sabz * sabz;
+            if (sab2 < 0.0001) continue;
+            const t = Math.max(0, Math.min(1,
+              ((px - seg.ax) * sabx + (pz - seg.az) * sabz) / sab2));
+            const qx = seg.ax + t * sabx, qz = seg.az + t * sabz;
+            const ddx = px - qx, ddz = pz - qz;
+            const distSq = ddx * ddx + ddz * ddz;
+            const clearance = Math.max(seg.halfCasing, 8);
+            if (distSq > clearance * clearance) continue;
+            const absDot = Math.abs(seg.dirX * rdx + seg.dirZ * rdz);
+            if (absDot > 0.85) continue;
+            return true;
+          }
+        }
+      }
+      return false;
+    };
+
+    // Phase 2+3: Scan each building, try relocate, else remove
+    const SLIDE_DIST = 20;
+    const toRemove: number[] = [];
+
+    for (let bi = 0; bi < this.indexedBuildings.length; bi++) {
+      const b = this.indexedBuildings[bi];
+      const node = this.nodes[b.nearestNodeId];
+      if (!isInIntersection(node.x, node.z, b.roadDirX, b.roadDirZ)) continue;
+
+      let relocated = false;
+      const edges = this.adjacency.get(b.nearestNodeId);
+      if (edges) {
+        for (const edge of edges) {
+          if (isHighwayType(edge.roadType)) continue;
+          const slid = slideAwayFromEndpoint(edge.waypoints, true, SLIDE_DIST);
+          if (!slid) continue;
+
+          const si = slid.segIndex;
+          const sdx = edge.waypoints[si + 1].x - edge.waypoints[si].x;
+          const sdz = edge.waypoints[si + 1].z - edge.waypoints[si].z;
+          const sLen = Math.sqrt(sdx * sdx + sdz * sdz);
+          const newDirX = sLen > 0.001 ? sdx / sLen : b.roadDirX;
+          const newDirZ = sLen > 0.001 ? sdz / sLen : b.roadDirZ;
+
+          if (isInIntersection(slid.x, slid.z, newDirX, newDirZ)) continue;
+
+          const proj: ProjectionResult = {
+            x: slid.x, z: slid.z,
+            segIndex: slid.segIndex, t: slid.t, distSq: 0,
+          };
+          const newNodeId = this.insertParkingNode(edge, proj);
+
+          let dirX = newDirX, dirZ = newDirZ;
+          const perpX = -dirZ, perpZ = dirX;
+          const toBldgX = b.centroidX - slid.x, toBldgZ = b.centroidZ - slid.z;
+          if (perpX * toBldgX + perpZ * toBldgZ < 0) {
+            dirX = -dirX; dirZ = -dirZ;
+          }
+
+          b.nearestNodeId = newNodeId;
+          b.roadDirX = dirX;
+          b.roadDirZ = dirZ;
+          relocated = true;
+          break;
+        }
+      }
+
+      if (!relocated) toRemove.push(bi);
+    }
+
+    if (toRemove.length > 0) {
+      const removeSet = new Set(toRemove);
+      this.indexedBuildings = this.indexedBuildings.filter((_, i) => !removeSet.has(i));
     }
   }
 
-  getRandomBuildingDestination(): { nodeId: number; buildingX: number; buildingZ: number } | null {
+  getRandomBuildingDestination(): { nodeId: number; buildingX: number; buildingZ: number; buildingId: number; roadDirX: number; roadDirZ: number; roadType: string } | null {
     if (this.indexedBuildings.length === 0) return null;
     const b = this.indexedBuildings[Math.floor(Math.random() * this.indexedBuildings.length)];
-    return { nodeId: b.nearestNodeId, buildingX: b.centroidX, buildingZ: b.centroidZ };
+    return { nodeId: b.nearestNodeId, buildingX: b.centroidX, buildingZ: b.centroidZ, buildingId: b.buildingId, roadDirX: b.roadDirX, roadDirZ: b.roadDirZ, roadType: b.roadType };
+  }
+
+  getBuildingDestination(buildingId: number): { nodeId: number; buildingX: number; buildingZ: number; roadDirX: number; roadDirZ: number; roadType: string } | null {
+    const b = this.indexedBuildings.find(ib => ib.buildingId === buildingId);
+    if (!b) return null;
+    return { nodeId: b.nearestNodeId, buildingX: b.centroidX, buildingZ: b.centroidZ, roadDirX: b.roadDirX, roadDirZ: b.roadDirZ, roadType: b.roadType };
+  }
+
+  filterIndexedBuildings(keepIds: Set<number>): void {
+    this.indexedBuildings = this.indexedBuildings.filter(b => keepIds.has(b.buildingId));
+  }
+
+  getIndexedBuildings(): IndexedBuilding[] {
+    return this.indexedBuildings;
   }
 }

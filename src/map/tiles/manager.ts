@@ -1,13 +1,37 @@
 import * as THREE from 'three';
 import type { BBox, BuildingData, RoadData, TileKey, TileState } from '../types';
-import { fetchTileData, bboxToTiles, tileKey, tileBBox, type TileCoord } from './vector-tiles';
-import { createBuildingMeshes } from '../buildings';
-import { createRoadMeshes, disposeObject } from '../roads/renderer';
-import { createRoadLabels } from '../roads/labels';
+import { fetchTileData, fetchTileBuffer, cacheSetDecoded, bboxToTiles, tileKey, tileBBox, type TileCoord } from './vector-tiles';
+import { decodeTile } from './decode';
+import { createRoadMeshesFromArrays, disposeObject } from '../roads/renderer';
+import { createBuildingMeshFromArrays } from '../buildings';
+import { createRoadLabelsFromPlacements } from '../roads/labels';
+import { geometryCache, getGeometryCached, putGeometryCached, geometryIdbKey } from './geometry-cache';
+import { getProjectionConstants } from '../projection';
+import { WorkerPool } from './worker-pool';
+import type { CachedTileGeometry } from './geometry-cache';
+import GeometryWorker from './geometry.worker.ts?worker';
 
-const MAX_TILES = 64;
-const UNLOAD_DISTANCE_MULTIPLIER = 4;
+interface TileTiming {
+  key: string;
+  timestamp: number;
+  cacheHit: boolean;
+  fetchMs: number;
+  geometryBuildMs: number;
+  meshCreationMs: number;
+  totalMs: number;
+}
+
+const MAX_TILES = 128;
+const MAX_TIMINGS = 256;
+const UNLOAD_DISTANCE_MULTIPLIER = 8;
 const PREFETCH_MAX_CONCURRENT = 4;
+const MAX_CONCURRENT_TILE_BUILDS = 8;
+
+const BUILDING_DEFAULT_COLOR = new THREE.Color(0xd4d0c8);
+
+function geometryCacheKey(tileK: TileKey, zoomLevel: number): string {
+  return `${tileK}@z${Math.floor(zoomLevel)}`;
+}
 
 export class TileManager {
   private tiles = new Map<TileKey, TileState>();
@@ -21,6 +45,13 @@ export class TileManager {
   private prefetchController: AbortController | null = null;
   private prefetchIdleId: number | null = null;
   private lastVisibleBBox: { south: number; west: number; north: number; east: number } | null = null;
+  private lastZoomLevel = 0;
+  private buildQueue: Array<{ key: TileKey; bbox: BBox; zoomLevel: number; coord: TileCoord }> = [];
+  private buildQueueKeys = new Set<TileKey>();
+  private activeBuildCount = 0;
+  private tileTimings: TileTiming[] = [];
+  private workerPool: WorkerPool;
+  private meshCreationQueue: Array<{ key: TileKey; cached: CachedTileGeometry; tFetch: number; t0: number; cacheHit: boolean; tGeometry: number }> = [];
 
   // Layer visibility
   showBuildings = true;
@@ -28,9 +59,11 @@ export class TileManager {
   showLabels = true;
 
   heightMultiplier = 1;
+  private buildingColorMap: Map<number, THREE.Color> | null = null;
 
   constructor(scene: THREE.Scene) {
     this.scene = scene;
+    this.workerPool = new WorkerPool(() => new GeometryWorker());
   }
 
   setCamera(camera: THREE.Camera) {
@@ -62,20 +95,43 @@ export class TileManager {
     return count;
   }
 
+  getPerformanceLog(): TileTiming[] {
+    return this.tileTimings.slice();
+  }
+
+  private recordTiming(timing: TileTiming) {
+    this.tileTimings.push(timing);
+    if (this.tileTimings.length > MAX_TIMINGS) {
+      this.tileTimings.splice(0, this.tileTimings.length - MAX_TIMINGS);
+    }
+  }
+
+  private logBatchSummary() {
+    if (this.tileTimings.length === 0) return;
+    const recent = this.tileTimings.slice(-20);
+    const totals = recent.map(t => t.totalMs).sort((a, b) => a - b);
+    const avg = totals.reduce((s, v) => s + v, 0) / totals.length;
+    const p95 = totals[Math.floor(totals.length * 0.95)] ?? totals[totals.length - 1];
+    const max = totals[totals.length - 1];
+    const hits = recent.filter(t => t.cacheHit).length;
+    console.log(
+      `[TilePerf] batch done: ${recent.length} tiles, ${hits} cache hits | avg=${avg.toFixed(1)}ms p95=${p95.toFixed(1)}ms max=${max.toFixed(1)}ms`
+    );
+  }
+
   updateVisibleTiles(bbox: BBox, zoomLevel: number) {
     this.cancelPrefetch();
     this.lastVisibleBBox = bbox;
+    this.lastZoomLevel = zoomLevel;
 
     const allTiles = bboxToTiles(bbox);
 
-    // Safety: if too many tiles, skip (camera too far out)
     if (allTiles.length > MAX_TILES * 4) {
       return;
     }
 
     const visibleKeys = new Set<TileKey>();
 
-    // Sort by distance from center (load center tiles first)
     const centerX = allTiles.reduce((s, t) => s + t.x, 0) / allTiles.length;
     const centerY = allTiles.reduce((s, t) => s + t.y, 0) / allTiles.length;
     allTiles.sort((a, b) => {
@@ -84,20 +140,23 @@ export class TileManager {
       return da - db;
     });
 
-    // Cap to MAX_TILES
     const toLoad = allTiles.slice(0, MAX_TILES);
 
     for (const coord of toLoad) {
       const key = tileKey(coord);
       visibleKeys.add(key);
 
-      if (!this.tiles.has(key)) {
+      const existing = this.tiles.get(key);
+      if (!existing) {
+        const bbox = tileBBox(coord);
+        this.loadTile(key, bbox, zoomLevel, coord);
+      } else if (existing.status === 'error') {
+        this.tiles.delete(key);
         const bbox = tileBBox(coord);
         this.loadTile(key, bbox, zoomLevel, coord);
       }
     }
 
-    // Unload distant tiles
     const centerLat = (bbox.south + bbox.north) / 2;
     const centerLng = (bbox.west + bbox.east) / 2;
     const viewWidth = bbox.east - bbox.west;
@@ -120,72 +179,192 @@ export class TileManager {
     }
   }
 
-  private async loadTile(key: TileKey, bbox: BBox, zoomLevel: number, coord: TileCoord) {
+  private loadTile(key: TileKey, bbox: BBox, zoomLevel: number, coord: TileCoord) {
     const abortController = new AbortController();
     const tile: TileState = {
       key,
       bbox,
       status: 'loading',
-      buildings: null,
-      roads: null,
       labels: null,
       roadData: null,
       buildingData: null,
       abortController,
+      meshGroup: null,
+      buildingMesh: null,
+      buildingVertexRanges: null,
+      roadMeshes: null,
     };
 
     this.tiles.set(key, tile);
     this.loadingCount++;
     this.onStateChange?.();
 
-    try {
-      const { buildings, roads } = await fetchTileData(coord, abortController.signal);
+    if (this.buildQueueKeys.has(key)) return;
+    this.buildQueueKeys.add(key);
+    this.buildQueue.push({ key, bbox, zoomLevel, coord });
+    this.drainBuildQueue();
+  }
 
-      // Check if tile was unloaded while loading
+  private drainBuildQueue() {
+    while (this.buildQueue.length > 0 && this.activeBuildCount < MAX_CONCURRENT_TILE_BUILDS) {
+      const item = this.buildQueue.shift()!;
+      this.activeBuildCount++;
+      this.processTile(item.key, item.zoomLevel, item.coord).finally(() => {
+        this.activeBuildCount--;
+        this.drainBuildQueue();
+      });
+    }
+  }
+
+  private async processTile(key: TileKey, zoomLevel: number, coord: TileCoord) {
+    this.buildQueueKeys.delete(key);
+
+    const tile = this.tiles.get(key);
+    if (!tile || tile.status !== 'loading') {
+      this.loadingCount--;
+      this.onStateChange?.();
+      return;
+    }
+
+    const t0 = performance.now();
+
+    try {
+      const cacheKey = geometryCacheKey(key, zoomLevel);
+      const idbKey = geometryIdbKey(key, zoomLevel);
+      let cached = geometryCache.get(cacheKey);
+
+      const [buffer, idbCached] = await Promise.all([
+        fetchTileBuffer(coord, tile.abortController.signal),
+        cached ? Promise.resolve(null) : getGeometryCached(idbKey),
+      ]);
+
+      const tFetch = performance.now();
+
       if (!this.tiles.has(key)) {
         this.loadingCount--;
         this.onStateChange?.();
         return;
       }
 
-      tile.roadData = roads;
-      tile.buildingData = buildings;
+      let cacheHit = true;
+      let tGeometry = performance.now();
 
-      // Create building meshes
-      const buildingMesh = createBuildingMeshes(buildings);
-      if (buildingMesh) {
-        const buildingGroup = new THREE.Group();
-        buildingGroup.name = `buildings-${key}`;
-        buildingGroup.add(buildingMesh);
-        buildingGroup.visible = this.showBuildings;
-        if (this.heightMultiplier !== 1) {
-          buildingGroup.scale.y = this.heightMultiplier;
+      if (!cached && idbCached) {
+        console.log(`[geometry-cache] ${key}: hit (from IDB)`);
+        cached = idbCached;
+        geometryCache.set(cacheKey, cached);
+      }
+
+      if (!cached) {
+        // Cold path: transfer raw buffer to worker for decode + geometry build
+        cacheHit = false;
+
+        const projection = getProjectionConstants();
+        const buildingColor = {
+          r: BUILDING_DEFAULT_COLOR.r,
+          g: BUILDING_DEFAULT_COLOR.g,
+          b: BUILDING_DEFAULT_COLOR.b,
+        };
+
+        const result = await this.workerPool.postJob({
+          buffer,
+          tileCoord: coord,
+          zoomLevel,
+          projection,
+          buildingColor,
+        });
+
+        tGeometry = performance.now();
+
+        if (!this.tiles.has(key)) {
+          this.loadingCount--;
+          this.onStateChange?.();
+          return;
         }
-        tile.buildings = buildingGroup;
-        this.scene.add(buildingGroup);
+
+        tile.roadData = result.decodedRoads;
+        tile.buildingData = result.decodedBuildings;
+        cacheSetDecoded(key, { buildings: result.decodedBuildings, roads: result.decodedRoads });
+
+        cached = {
+          buildings: result.buildings,
+          roads: result.roads,
+          labelPlacements: result.labelPlacements,
+        };
+        geometryCache.set(cacheKey, cached);
+        putGeometryCached(idbKey, cached).catch(() => {});
+      } else {
+        // Warm path: geometry cached, decode on main thread for tile data
+        const decoded = decodeTile(buffer, coord);
+        tile.roadData = decoded.roads;
+        tile.buildingData = decoded.buildings;
+        cacheSetDecoded(key, decoded);
       }
 
-      // Create road meshes
-      const roadResult = createRoadMeshes(roads, zoomLevel);
-      const roadGroup = new THREE.Group();
-      roadGroup.name = `roads-${key}`;
-      if (roadResult.highwayMask) roadGroup.add(roadResult.highwayMask);
-      if (roadResult.localCasing) roadGroup.add(roadResult.localCasing);
-      if (roadResult.localFill) roadGroup.add(roadResult.localFill);
-      if (roadResult.localCenterLine) roadGroup.add(roadResult.localCenterLine);
-      if (roadResult.highwayShadow) roadGroup.add(roadResult.highwayShadow);
-      if (roadResult.highwayCasing) roadGroup.add(roadResult.highwayCasing);
-      if (roadResult.highwayFill) roadGroup.add(roadResult.highwayFill);
-      if (roadResult.highwayCenterLine) roadGroup.add(roadResult.highwayCenterLine);
-      if (roadGroup.children.length > 0) {
-        roadGroup.visible = this.showRoads;
-        tile.roads = roadGroup;
-        this.scene.add(roadGroup);
+      this.meshCreationQueue.push({ key, cached, tFetch, t0, cacheHit, tGeometry });
+
+    } catch (err) {
+      if ((err as Error).name === 'AbortError') {
+        // Tile was cancelled
+      } else {
+        console.warn(`Failed to load tile ${key}:`, err);
+        tile.status = 'error';
+      }
+      this.loadingCount--;
+      this.onStateChange?.();
+
+      if (this.loadingCount === 0) {
+        this.logBatchSummary();
+        if (this.lastVisibleBBox) {
+          this.schedulePrefetch(this.lastVisibleBBox);
+        }
+      }
+    }
+  }
+
+  drainMeshQueue() {
+    const MAX_PER_FRAME = 8;
+    let processed = 0;
+    let anyProcessed = false;
+
+    while (this.meshCreationQueue.length > 0 && processed < MAX_PER_FRAME) {
+      const item = this.meshCreationQueue.shift()!;
+      const { key, cached, tFetch, t0, cacheHit, tGeometry } = item;
+
+      const tile = this.tiles.get(key);
+      if (!tile || tile.status !== 'loading') {
+        this.loadingCount--;
+        continue;
       }
 
-      // Create road labels
-      const labelGroup = createRoadLabels(
-        roads, zoomLevel, this.camera ?? undefined,
+      const tMeshStart = performance.now();
+
+      const group = new THREE.Group();
+      group.name = `tile-${key}`;
+
+      if (cached.buildings) {
+        const buildingMesh = createBuildingMeshFromArrays(cached.buildings, this.buildingColorMap ?? undefined);
+        buildingMesh.visible = this.showBuildings;
+        buildingMesh.scale.y = this.heightMultiplier;
+        group.add(buildingMesh);
+        tile.buildingMesh = buildingMesh;
+        tile.buildingVertexRanges = cached.buildings.vertexRanges;
+      }
+
+      const roadMeshes = createRoadMeshesFromArrays(cached.roads);
+      tile.roadMeshes = roadMeshes;
+      for (const obj of Object.values(roadMeshes)) {
+        if (obj) {
+          (obj as THREE.Object3D).visible = this.showRoads;
+          group.add(obj as THREE.Object3D);
+        }
+      }
+
+      tile.meshGroup = group;
+      this.scene.add(group);
+
+      const labelGroup = createRoadLabelsFromPlacements(
+        cached.labelPlacements ?? [], this.camera ?? undefined,
         this.canvasWidth || undefined, this.canvasHeight || undefined
       );
       if (labelGroup.children.length > 0) {
@@ -194,22 +373,33 @@ export class TileManager {
         this.scene.add(labelGroup);
       }
 
+      const tEnd = performance.now();
+      this.recordTiming({
+        key,
+        timestamp: t0,
+        cacheHit,
+        fetchMs: tFetch - t0,
+        geometryBuildMs: cacheHit ? 0 : tGeometry - tFetch,
+        meshCreationMs: tEnd - tMeshStart,
+        totalMs: tEnd - t0,
+      });
+
       tile.status = 'loaded';
-      this.roadDataVersion++;
-    } catch (err) {
-      if ((err as Error).name === 'AbortError') {
-        // Tile was cancelled
-      } else {
-        console.warn(`Failed to load tile ${key}:`, err);
-        tile.status = 'error';
+      this.loadingCount--;
+      processed++;
+      anyProcessed = true;
+
+      if (this.loadingCount === 0) {
+        this.logBatchSummary();
+        if (this.lastVisibleBBox) {
+          this.schedulePrefetch(this.lastVisibleBBox);
+        }
       }
     }
 
-    this.loadingCount--;
-    this.onStateChange?.();
-
-    if (this.loadingCount === 0 && this.lastVisibleBBox) {
-      this.schedulePrefetch(this.lastVisibleBBox);
+    if (anyProcessed) {
+      this.roadDataVersion++;
+      this.onStateChange?.();
     }
   }
 
@@ -230,7 +420,6 @@ export class TileManager {
 
   private schedulePrefetch(bbox: BBox) {
     if (typeof requestIdleCallback === 'undefined') {
-      // Fallback for environments without requestIdleCallback
       this.prefetchIdleId = setTimeout(() => this.runPrefetch(bbox), 200) as unknown as number;
       return;
     }
@@ -239,7 +428,7 @@ export class TileManager {
 
   private async runPrefetch(bbox: BBox) {
     this.prefetchIdleId = null;
-    const expand = 0.024; // ~2 tile widths at z14 / LA latitude
+    const expand = 0.024;
     const expandedBBox: BBox = {
       south: bbox.south - expand,
       west: bbox.west - expand,
@@ -255,7 +444,6 @@ export class TileManager {
     this.prefetchController = new AbortController();
     const signal = this.prefetchController.signal;
 
-    // Fetch in batches of PREFETCH_MAX_CONCURRENT
     for (let i = 0; i < toFetch.length; i += PREFETCH_MAX_CONCURRENT) {
       if (signal.aborted) break;
       const batch = toFetch.slice(i, i + PREFETCH_MAX_CONCURRENT);
@@ -271,14 +459,11 @@ export class TileManager {
 
     tile.abortController.abort();
 
-    if (tile.buildings) {
-      this.scene.remove(tile.buildings);
-      disposeObject(tile.buildings);
+    if (tile.meshGroup) {
+      this.scene.remove(tile.meshGroup);
+      disposeObject(tile.meshGroup);
     }
-    if (tile.roads) {
-      this.scene.remove(tile.roads);
-      disposeObject(tile.roads);
-    }
+
     if (tile.labels) {
       this.scene.remove(tile.labels);
       disposeObject(tile.labels);
@@ -314,24 +499,52 @@ export class TileManager {
     else if (layer === 'labels') this.showLabels = visible;
 
     for (const tile of this.tiles.values()) {
-      const group = layer === 'buildings' ? tile.buildings
-        : layer === 'roads' ? tile.roads
-          : tile.labels;
-      if (group) group.visible = visible;
+      if (layer === 'buildings' && tile.buildingMesh) {
+        tile.buildingMesh.visible = visible;
+      }
+      if (layer === 'roads' && tile.roadMeshes) {
+        for (const obj of Object.values(tile.roadMeshes)) {
+          if (obj) (obj as THREE.Object3D).visible = visible;
+        }
+      }
+      if (layer === 'labels' && tile.labels) {
+        tile.labels.visible = visible;
+      }
     }
   }
 
   setHeightMultiplier(mult: number) {
     this.heightMultiplier = mult;
     for (const tile of this.tiles.values()) {
-      if (tile.buildings) {
-        tile.buildings.scale.y = mult;
+      if (tile.buildingMesh) tile.buildingMesh.scale.y = mult;
+    }
+  }
+
+  setBuildingColorMap(colorMap: Map<number, THREE.Color>) {
+    this.buildingColorMap = colorMap;
+    for (const tile of this.tiles.values()) {
+      if (!tile.buildingMesh || !tile.buildingVertexRanges) continue;
+      const colAttr = tile.buildingMesh.geometry.attributes.color as THREE.BufferAttribute;
+      const colors = colAttr.array as Float32Array;
+      for (const range of tile.buildingVertexRanges) {
+        const color = colorMap.get(range.buildingId) ?? BUILDING_DEFAULT_COLOR;
+        const r = color.r, g = color.g, b = color.b;
+        for (let v = range.startVertex; v < range.startVertex + range.vertexCount; v++) {
+          colors[v * 3] = r;
+          colors[v * 3 + 1] = g;
+          colors[v * 3 + 2] = b;
+        }
       }
+      colAttr.needsUpdate = true;
     }
   }
 
   dispose() {
     this.cancelPrefetch();
+    this.buildQueue.length = 0;
+    this.buildQueueKeys.clear();
+    this.meshCreationQueue.length = 0;
+    this.workerPool.dispose();
     for (const key of Array.from(this.tiles.keys())) {
       this.unloadTile(key);
     }
