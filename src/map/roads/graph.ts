@@ -59,6 +59,8 @@ const MIN_SPAWN_SPEED = 0.55;
 const MAX_BUILDING_NODE_DIST_SQ = 35 * 35;
 const SNAP_THRESHOLD = 2; // meters -- snap to existing endpoint instead of splitting
 const MIN_SUBEDGE_LEN = 1; // meters -- skip sub-edges shorter than this
+const TURN_PENALTY = 7.5; // seconds, OSRM car.lua default
+const UTURN_PENALTY = 20; // seconds, OSRM car.lua default
 
 interface ProjectionResult {
   x: number;
@@ -218,7 +220,7 @@ class MinHeap {
 export class RoadGraph {
   nodes: GraphNode[] = [];
   adjacency: Map<number, GraphEdge[]> = new Map();
-  private grid = new Map<string, number>();
+  private grid = new Map<string, number[]>();
   private connectedNodes: number[] = [];
   private carSpawnNodes: number[] = [];
   private indexedBuildings: IndexedBuilding[] = [];
@@ -247,46 +249,46 @@ export class RoadGraph {
         return { lat: p.lat, lng: p.lng, x: pt.x, z: pt.z };
       });
 
-      const startNode = this.getOrCreateNode(projected[0]);
-      const endNode = this.getOrCreateNode(projected[projected.length - 1]);
-
-      const waypoints = projected.map(p => ({ x: p.x, y: 0, z: p.z }));
-
-      let totalDist = 0;
-      for (let i = 1; i < projected.length; i++) {
-        const dx = projected[i].x - projected[i - 1].x;
-        const dz = projected[i].z - projected[i - 1].z;
-        totalDist += Math.sqrt(dx * dx + dz * dz);
-      }
-
-      if (totalDist < 1) continue;
-      const cost = totalDist / speed;
-
+      const nodeIds = projected.map(p => this.getOrCreateNode(p));
       const effectiveOneway = road.oneway !== 0 ? road.oneway : (isDefaultOneway(road.type) ? 1 : 0);
 
-      if (!this.adjacency.has(startNode)) this.adjacency.set(startNode, []);
-      if (!this.adjacency.has(endNode)) this.adjacency.set(endNode, []);
+      let segStart = 0;
+      for (let i = 1; i < nodeIds.length; i++) {
+        if (nodeIds[i] === nodeIds[segStart]) continue;
 
-      if (effectiveOneway >= 0) {
-        this.adjacency.get(startNode)!.push({
-          from: startNode,
-          to: endNode,
-          distance: totalDist,
-          cost,
-          roadType: road.type,
-          waypoints,
-        });
-      }
+        let segDist = 0;
+        for (let k = segStart + 1; k <= i; k++) {
+          const dx = projected[k].x - projected[k - 1].x;
+          const dz = projected[k].z - projected[k - 1].z;
+          segDist += Math.sqrt(dx * dx + dz * dz);
+        }
+        if (segDist < 1) { segStart = i; continue; }
 
-      if (effectiveOneway <= 0) {
-        this.adjacency.get(endNode)!.push({
-          from: endNode,
-          to: startNode,
-          distance: totalDist,
-          cost,
-          roadType: road.type,
-          waypoints: [...waypoints].reverse(),
-        });
+        const fromNode = nodeIds[segStart];
+        const toNode = nodeIds[i];
+        const wp: Array<{ x: number; y: number; z: number }> = [];
+        for (let k = segStart; k <= i; k++) {
+          wp.push({ x: projected[k].x, y: 0, z: projected[k].z });
+        }
+        const cost = segDist * (2 - speed);
+
+        if (!this.adjacency.has(fromNode)) this.adjacency.set(fromNode, []);
+        if (!this.adjacency.has(toNode)) this.adjacency.set(toNode, []);
+
+        if (effectiveOneway >= 0) {
+          this.adjacency.get(fromNode)!.push({
+            from: fromNode, to: toNode, distance: segDist,
+            cost, roadType: road.type, waypoints: wp,
+          });
+        }
+        if (effectiveOneway <= 0) {
+          this.adjacency.get(toNode)!.push({
+            from: toNode, to: fromNode, distance: segDist,
+            cost, roadType: road.type, waypoints: [...wp].reverse(),
+          });
+        }
+
+        segStart = i;
       }
     }
 
@@ -379,21 +381,80 @@ export class RoadGraph {
     const tolSq = CLUSTER_TOLERANCE * CLUSTER_TOLERANCE;
     for (let dx = -1; dx <= 1; dx++) {
       for (let dz = -1; dz <= 1; dz++) {
-        const existing = this.grid.get(`${gx + dx},${gz + dz}`);
-        if (existing === undefined) continue;
-        const node = this.nodes[existing];
-        const ddx = node.x - p.x, ddz = node.z - p.z;
-        if (ddx * ddx + ddz * ddz < tolSq) return existing;
+        const bucket = this.grid.get(`${gx + dx},${gz + dz}`);
+        if (!bucket) continue;
+        for (const existingId of bucket) {
+          const node = this.nodes[existingId];
+          const ddx = node.x - p.x, ddz = node.z - p.z;
+          if (ddx * ddx + ddz * ddz < tolSq) return existingId;
+        }
       }
     }
     const id = this.nodes.length;
     this.nodes.push({ id, lat: p.lat, lng: p.lng, x: p.x, z: p.z });
-    this.grid.set(`${gx},${gz}`, id);
+    const key = `${gx},${gz}`;
+    let bucket = this.grid.get(key);
+    if (!bucket) { bucket = []; this.grid.set(key, bucket); }
+    bucket.push(id);
     return id;
   }
 
   private isIntersectionNode(nodeId: number): boolean {
     return this.intersectionNodes.has(nodeId);
+  }
+
+  private computeTurnPenalty(prevId: number, currentId: number, nextId: number): number {
+    if (prevId === nextId) return TURN_PENALTY + UTURN_PENALTY;
+
+    const prev = this.nodes[prevId];
+    const cur = this.nodes[currentId];
+    const next = this.nodes[nextId];
+
+    const inX = cur.x - prev.x;
+    const inZ = cur.z - prev.z;
+    const outX = next.x - cur.x;
+    const outZ = next.z - cur.z;
+
+    const inLen = Math.sqrt(inX * inX + inZ * inZ);
+    const outLen = Math.sqrt(outX * outX + outZ * outZ);
+    if (inLen < 0.001 || outLen < 0.001) return 0;
+
+    const dot = inX * outX + inZ * outZ;
+    const cosAngle = Math.max(-1, Math.min(1, dot / (inLen * outLen)));
+    const angle = Math.acos(cosAngle);
+
+    return TURN_PENALTY / (1 + Math.exp(-(13 * angle / Math.PI - 6.5)));
+  }
+
+  private findSubEdge(
+    fromId: number, toId: number, px: number, pz: number, roadType: string
+  ): { edge: GraphEdge; proj: ProjectionResult } | null {
+    const visited = new Set<number>();
+    const queue = [fromId];
+    let bestResult: { edge: GraphEdge; proj: ProjectionResult } | null = null;
+
+    while (queue.length > 0 && visited.size < 20) {
+      const current = queue.shift()!;
+      if (visited.has(current)) continue;
+      visited.add(current);
+
+      const edges = this.adjacency.get(current);
+      if (!edges) continue;
+
+      for (const e of edges) {
+        if (e.roadType !== roadType) continue;
+        const wp2d = e.waypoints.map(w => ({ x: w.x, z: w.z }));
+        const proj = projectOnPolyline(px, pz, wp2d);
+        if (!proj) continue;
+        if (!bestResult || proj.distSq < bestResult.proj.distSq) {
+          bestResult = { edge: e, proj };
+        }
+        if (bestResult.proj.distSq < 0.01) return bestResult;
+        if (!visited.has(e.to)) queue.push(e.to);
+      }
+    }
+
+    return bestResult;
   }
 
   private insertParkingNode(
@@ -440,11 +501,16 @@ export class RoadGraph {
     const distB = computePolylineDist(wpB);
     const speed = SPEED_WEIGHTS[edge.roadType] ?? 0.5;
 
-    // Remove forward edge from→to
+    // Remove forward edge from→to (handle stale edges from prior splits)
     const fwdEdges = this.adjacency.get(edge.from);
     if (fwdEdges) {
       const idx = fwdEdges.indexOf(edge);
-      if (idx !== -1) fwdEdges.splice(idx, 1);
+      if (idx === -1) {
+        const found = this.findSubEdge(edge.from, edge.to, proj.x, proj.z, edge.roadType);
+        if (found) return this.insertParkingNode(found.edge, found.proj);
+        return this.findNearestNode(proj.x, proj.z) ?? edge.from;
+      }
+      fwdEdges.splice(idx, 1);
     }
 
     // Add sub-edges for forward direction
@@ -453,13 +519,13 @@ export class RoadGraph {
     if (wpA.length >= 2 && distA >= MIN_SUBEDGE_LEN) {
       this.adjacency.get(edge.from)!.push({
         from: edge.from, to: parkingId, distance: distA,
-        cost: distA / speed, roadType: edge.roadType, waypoints: wpA,
+        cost: distA * (2 - speed), roadType: edge.roadType, waypoints: wpA,
       });
     }
     if (wpB.length >= 2 && distB >= MIN_SUBEDGE_LEN) {
       this.adjacency.get(parkingId)!.push({
         from: parkingId, to: edge.to, distance: distB,
-        cost: distB / speed, roadType: edge.roadType, waypoints: wpB,
+        cost: distB * (2 - speed), roadType: edge.roadType, waypoints: wpB,
       });
     }
 
@@ -474,13 +540,13 @@ export class RoadGraph {
         if (wpBRev.length >= 2 && distB >= MIN_SUBEDGE_LEN) {
           revEdges.push({
             from: edge.to, to: parkingId, distance: distB,
-            cost: distB / speed, roadType: edge.roadType, waypoints: wpBRev,
+            cost: distB * (2 - speed), roadType: edge.roadType, waypoints: wpBRev,
           });
         }
         if (wpARev.length >= 2 && distA >= MIN_SUBEDGE_LEN) {
           this.adjacency.get(parkingId)!.push({
             from: parkingId, to: edge.from, distance: distA,
-            cost: distA / speed, roadType: edge.roadType, waypoints: wpARev,
+            cost: distA * (2 - speed), roadType: edge.roadType, waypoints: wpARev,
           });
         }
       }
@@ -523,8 +589,13 @@ export class RoadGraph {
       const edges = this.adjacency.get(node);
       if (!edges) continue;
 
+      const prevNode = prev[node];
       for (const edge of edges) {
-        const newCost = dist[node] + edge.cost;
+        let turnPenalty = 0;
+        if (prevNode !== -1 && this.isIntersectionNode(node)) {
+          turnPenalty = this.computeTurnPenalty(prevNode, node, edge.to);
+        }
+        const newCost = dist[node] + edge.cost + turnPenalty;
         if (newCost < dist[edge.to]) {
           dist[edge.to] = newCost;
           prev[edge.to] = node;
@@ -572,7 +643,7 @@ export class RoadGraph {
     return waypoints;
   }
 
-  getRouteWaypointsWithOffset(nodePath: number[]): Array<{ x: number; y: number; z: number }> {
+  getRouteWaypointsWithOffset(nodePath: number[], skipFirst = false): Array<{ x: number; y: number; z: number }> {
     const waypoints: Array<{ x: number; y: number; z: number }> = [];
 
     for (let i = 0; i < nodePath.length - 1; i++) {
@@ -587,7 +658,7 @@ export class RoadGraph {
         continue;
       }
 
-      const offset = getLaneOffset(edge.roadType);
+      const offset = (i === 0 && skipFirst) ? 0 : getLaneOffset(edge.roadType);
       const edgePts = offset > 0 ? offsetWaypointsRight(edge.waypoints, offset) : edge.waypoints;
 
       const start = i === 0 ? 0 : 1;
