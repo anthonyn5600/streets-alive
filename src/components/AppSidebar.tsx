@@ -4,16 +4,20 @@ import { SearchSection } from '@/components/sidebar/SearchSection';
 import { LayersSection } from '@/components/sidebar/LayersSection';
 import { DriversSection } from '@/components/sidebar/DriversSection';
 import { HouseholdsSection } from '@/components/sidebar/HouseholdsSection';
+import { TestsSection } from '@/components/sidebar/TestsSection';
 import type { MapEngine } from '@/map/engine';
-import type { SimCarInfo, HouseholdInfo } from '@/map/types';
+import type { SimCarInfo, HouseholdInfo, RuntimeTestResult } from '@/map/types';
 
 interface AppSidebarProps {
   engine: MapEngine | null;
   cars: SimCarInfo[];
   households: HouseholdInfo[];
+  testResults: RuntimeTestResult[];
+  showTests: boolean;
+  onToggleTests: () => void;
 }
 
-export function AppSidebar({ engine, cars, households }: AppSidebarProps) {
+export function AppSidebar({ engine, cars, households, testResults, showTests, onToggleTests }: AppSidebarProps) {
   return (
     <div className="absolute top-4 left-4 z-10 w-80 max-h-[calc(100vh-2rem)] flex flex-col bg-white/90 backdrop-blur-sm shadow-lg rounded-lg border border-border overflow-hidden">
       <SearchSection engine={engine} />
@@ -29,6 +33,8 @@ export function AppSidebar({ engine, cars, households }: AppSidebarProps) {
               <HouseholdsSection engine={engine} households={households} />
             </>
           )}
+          <Separator className="my-1" />
+          <TestsSection testResults={testResults} showTests={showTests} onToggleTests={onToggleTests} />
         </div>
       </ScrollArea>
     </div>

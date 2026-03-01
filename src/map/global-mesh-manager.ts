@@ -12,7 +12,8 @@ import type {
 type LayerId =
   | 'buildings'
   | 'localCasing' | 'localFill' | 'localCenterLine'
-  | 'hwMask' | 'hwShadow' | 'hwCasing' | 'hwFill' | 'hwCenterLine';
+  | 'hwMask' | 'hwShadow' | 'hwCasing' | 'hwFill' | 'hwCenterLine'
+  | 'onewayArrows';
 
 interface TileSlot {
   vertexOffset: number;
@@ -42,10 +43,13 @@ const HW_ROAD_VERTS = 15_000;
 const HW_ROAD_IDX = 30_000;
 const CENTER_LINE_VERTS = 10_000;
 const CENTER_LINE_IDX = 20_000;
+const ONEWAY_VERTS = 5_000;
+const ONEWAY_IDX = 5_000;
 
 const ROAD_LAYERS: LayerId[] = [
   'localCasing', 'localFill', 'localCenterLine',
   'hwMask', 'hwShadow', 'hwCasing', 'hwFill', 'hwCenterLine',
+  'onewayArrows',
 ];
 
 export class GlobalMeshManager {
@@ -139,6 +143,15 @@ export class GlobalMeshManager {
       initialVertices: CENTER_LINE_VERTS,
       initialIndices: CENTER_LINE_IDX,
     });
+
+    this.createLayer('onewayArrows', {
+      material: materialPool.getOnewayArrows(),
+      renderOrder: 1,
+      hasNormals: false,
+      hasColors: false,
+      initialVertices: ONEWAY_VERTS,
+      initialIndices: ONEWAY_IDX,
+    });
   }
 
   private createLayer(id: LayerId, config: {
@@ -211,6 +224,7 @@ export class GlobalMeshManager {
     this.appendColoredLayers(key, 'hwCasing', cached.roads.hwCasing);
     this.appendColoredLayers(key, 'hwFill', cached.roads.hwFill);
     this.appendSingleLayer(key, 'hwCenterLine', cached.roads.hwCenterLine);
+    this.appendSingleLayer(key, 'onewayArrows', cached.roads.onewayArrows);
   }
 
   removeTile(key: TileKey) {

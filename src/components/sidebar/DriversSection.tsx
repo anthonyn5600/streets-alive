@@ -38,8 +38,8 @@ export function DriversSection({ engine, cars }: DriversSectionProps) {
     if (!engine) return;
     const car = cars.find(c => c.id === carId);
     if (car?.selected) {
-      engine.deselectCar();
-      setExpandedCarId(null);
+      engine.deselectCar(carId);
+      if (expandedCarId === carId) setExpandedCarId(null);
     } else {
       engine.selectCarById(carId);
       setExpandedCarId(carId);
@@ -48,10 +48,10 @@ export function DriversSection({ engine, cars }: DriversSectionProps) {
     }
   };
 
-  const handleDeselect = (e: React.MouseEvent) => {
+  const handleDeselect = (e: React.MouseEvent, carId: number) => {
     e.stopPropagation();
-    engine?.deselectCar();
-    setExpandedCarId(null);
+    engine?.deselectCar(carId);
+    if (expandedCarId === carId) setExpandedCarId(null);
   };
 
   return (
@@ -90,7 +90,7 @@ export function DriversSection({ engine, cars }: DriversSectionProps) {
                 )}
                 {car.selected && (
                   <span
-                    onClick={handleDeselect}
+                    onClick={(e) => handleDeselect(e, car.id)}
                     className="text-muted-foreground hover:text-red-500 cursor-pointer ml-1"
                   >
                     <X className="size-3" />

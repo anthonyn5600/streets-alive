@@ -136,6 +136,13 @@ export interface SimCarInfo {
   dwellProgress: number; // 0-1
   dwellRemaining: number;
   householdId: number;
+  routeProgress: number; // 0-1 driving progress, -1 if parked
+  originBuildingId: number | null;
+  destinationBuildingId: number | null;
+  originAddress: string | null;
+  destinationAddress: string | null;
+  originPos: { x: number; z: number } | null;
+  destinationPos: { x: number; z: number } | null;
 }
 
 export interface MapState {
@@ -187,6 +194,7 @@ export interface RuntimeTestSnapshot {
   households: HouseholdInfo[];
   persons: PersonTestData[];
   indexedBuildingIds: Set<number>;
+  buildingRoleIds: Set<number>;
   shoppingBuildingCount: number;
   populationInitialized: boolean;
 }

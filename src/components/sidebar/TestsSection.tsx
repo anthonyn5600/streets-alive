@@ -1,11 +1,12 @@
 import { useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { ChevronDown, ChevronRight } from 'lucide-react';
+import { FlaskConical, ChevronDown, ChevronRight } from 'lucide-react';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import type { RuntimeTestResult, TestStatus } from '@/map/types';
 
-interface RuntimeTestPanelProps {
-  results: RuntimeTestResult[];
-  visible: boolean;
+interface TestsSectionProps {
+  testResults: RuntimeTestResult[];
+  showTests: boolean;
+  onToggleTests: () => void;
 }
 
 const STATUS_DOT: Record<TestStatus, string> = {
@@ -25,18 +26,13 @@ function groupByCategory(results: RuntimeTestResult[]): Map<string, RuntimeTestR
   return groups;
 }
 
-export function RuntimeTestPanel({ results, visible }: RuntimeTestPanelProps) {
-  const [collapsed, setCollapsed] = useState(false);
+export function TestsSection({ testResults, showTests, onToggleTests }: TestsSectionProps) {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
 
-  if (results.length === 0 || !visible) return null;
+  const failCount = testResults.filter(r => r.status === 'fail').length;
+  const badgeCount = failCount > 0 ? failCount : testResults.length;
 
-  const passCount = results.filter(r => r.status === 'pass').length;
-  const failCount = results.filter(r => r.status === 'fail').length;
-  const warnCount = results.filter(r => r.status === 'warn').length;
-  const skipCount = results.filter(r => r.status === 'skip').length;
-
-  const groups = groupByCategory(results);
+  const groups = groupByCategory(testResults);
 
   const toggleCategory = (cat: string) => {
     setCollapsedCategories(prev => {
@@ -47,27 +43,25 @@ export function RuntimeTestPanel({ results, visible }: RuntimeTestPanelProps) {
     });
   };
 
-  const parts: string[] = [];
-  if (passCount > 0) parts.push(`${passCount} pass`);
-  if (warnCount > 0) parts.push(`${warnCount} warn`);
-  if (failCount > 0) parts.push(`${failCount} fail`);
-  if (skipCount > 0) parts.push(`${skipCount} skip`);
-
   return (
-    <div className="absolute bottom-14 right-4 z-10 w-72">
-      <Card className="bg-white/90 backdrop-blur-sm shadow-lg">
-        <CardHeader className="pb-2 cursor-pointer" onClick={() => setCollapsed(!collapsed)}>
-          <CardTitle className="text-sm font-semibold flex items-center justify-between">
-            <span>Tests: {parts.join(' | ')}</span>
-            {collapsed ? (
-              <ChevronRight className="size-4 text-muted-foreground" />
-            ) : (
-              <ChevronDown className="size-4 text-muted-foreground" />
-            )}
-          </CardTitle>
-        </CardHeader>
-        {!collapsed && (
-          <CardContent className="pt-0 pb-2">
+    <Collapsible open={showTests} onOpenChange={onToggleTests}>
+      <CollapsibleTrigger className="group flex w-full items-center gap-2 px-3 py-2 text-sm font-medium hover:bg-accent/50 transition-colors rounded-md">
+        <FlaskConical className="size-4 text-muted-foreground" />
+        <span className="flex-1 text-left">Runtime Tests</span>
+        {testResults.length > 0 && (
+          <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-normal ${
+            failCount > 0 ? 'bg-red-100 text-red-700' : 'bg-muted text-muted-foreground'
+          }`}>
+            {badgeCount}
+          </span>
+        )}
+        <ChevronDown className="size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180" />
+      </CollapsibleTrigger>
+      <CollapsibleContent className="overflow-hidden">
+        <div className="px-3 pb-3">
+          {testResults.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Waiting for results...</p>
+          ) : (
             <div className="max-h-64 overflow-y-auto space-y-2">
               {Array.from(groups.entries()).map(([category, tests]) => {
                 const catCollapsed = collapsedCategories.has(category);
@@ -103,9 +97,9 @@ export function RuntimeTestPanel({ results, visible }: RuntimeTestPanelProps) {
                 );
               })}
             </div>
-          </CardContent>
-        )}
-      </Card>
-    </div>
+          )}
+        </div>
+      </CollapsibleContent>
+    </Collapsible>
   );
 }

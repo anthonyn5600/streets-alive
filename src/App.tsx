@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect } from 'react';
 import { MapCanvas } from '@/components/MapCanvas';
 import { AppSidebar } from '@/components/AppSidebar';
 import { StatusPill } from '@/components/StatusPill';
-import { RuntimeTestPanel } from '@/components/RuntimeTestPanel';
+import { RoutePanel } from '@/components/RoutePanel';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import type { MapEngine } from '@/map/engine';
 import type { SimCarInfo, HouseholdInfo, MapState, RuntimeTestResult } from '@/map/types';
@@ -64,14 +64,9 @@ function App() {
     <TooltipProvider>
       <div className="relative w-full h-full">
         <MapCanvas onEngineReady={handleEngineReady} onStateChange={handleStateChange} />
-        <AppSidebar engine={engine} cars={cars} households={households} />
-        <RuntimeTestPanel results={testResults} visible={showTests} />
-        <StatusPill
-          mapState={mapState}
-          engine={engine}
-          testResults={testResults}
-          onToggleTests={() => setShowTests(prev => !prev)}
-        />
+        <AppSidebar engine={engine} cars={cars} households={households} testResults={testResults} showTests={showTests} onToggleTests={() => setShowTests(prev => !prev)} />
+        <RoutePanel engine={engine} cars={cars} />
+        <StatusPill mapState={mapState} engine={engine} />
       </div>
     </TooltipProvider>
   );

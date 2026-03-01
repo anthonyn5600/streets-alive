@@ -23,11 +23,13 @@ function testRouteValidity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
       skipResult('route.waypoints', 'Route Validity', 'Driving cars have >= 2 waypoints'),
       skipResult('route.progress', 'Route Validity', 'Waypoint index in bounds'),
       skipResult('route.destination', 'Route Validity', 'Destination building is indexed'),
+      skipResult('route.dest-has-role', 'Route Validity', 'Destination building has role'),
     ];
   }
 
   const driving = snap.cars.filter(c => c.state === 'driving' && !c.hidden);
   const householdDriving = driving.filter(c => c.householdId !== -1);
+  const allHousehold = snap.cars.filter(c => c.householdId !== -1);
 
   // Driving cars must have >= 2 waypoints to interpolate between
   let failWp = 0;
@@ -52,6 +54,15 @@ function testRouteValidity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
     }
   }
 
+  // Dest building must have a role (home/work/shopping) -- if not,
+  // the building has no color and shouldn't be a trip target
+  let failRole = 0;
+  for (const c of allHousehold) {
+    if (c.destinationBuildingId !== null && !snap.buildingRoleIds.has(c.destinationBuildingId)) {
+      failRole++;
+    }
+  }
+
   return [
     result('route.waypoints', 'Route Validity', 'Driving cars have >= 2 waypoints',
       failWp > 0 ? 'fail' : 'pass',
@@ -65,6 +76,10 @@ function testRouteValidity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
       failDest > 0 ? 'fail' : 'pass',
       failDest > 0 ? `${failDest}/${householdDriving.length} invalid dest` : `${householdDriving.length} OK`,
       householdDriving.length, failDest),
+    result('route.dest-has-role', 'Route Validity', 'Destination building has role',
+      failRole > 0 ? 'fail' : 'pass',
+      failRole > 0 ? `${failRole}/${allHousehold.length} no role` : `${allHousehold.length} OK`,
+      allHousehold.length, failRole),
   ];
 }
 
@@ -107,6 +122,7 @@ function testBuildingAssignments(snap: RuntimeTestSnapshot): RuntimeTestResult[]
       skipResult('building.home-valid', 'Building Assignments', 'Home buildings indexed'),
       skipResult('building.work-valid', 'Building Assignments', 'Work buildings indexed'),
       skipResult('building.shopping-exists', 'Building Assignments', 'Shopping buildings exist'),
+      skipResult('building.roles-indexed', 'Building Assignments', 'Role buildings stay indexed'),
     ];
   }
 
@@ -125,6 +141,11 @@ function testBuildingAssignments(snap: RuntimeTestSnapshot): RuntimeTestResult[]
     if (!snap.indexedBuildingIds.has(p.workBuildingId)) failWork++;
   }
 
+  let failRoleIndexed = 0;
+  for (const roleId of snap.buildingRoleIds) {
+    if (!snap.indexedBuildingIds.has(roleId)) failRoleIndexed++;
+  }
+
   return [
     result('building.home-valid', 'Building Assignments', 'Home buildings indexed',
       failHome > 0 ? 'fail' : 'pass',
@@ -138,6 +159,12 @@ function testBuildingAssignments(snap: RuntimeTestSnapshot): RuntimeTestResult[]
       snap.shoppingBuildingCount > 0 ? 'pass' : 'fail',
       `${snap.shoppingBuildingCount} shopping buildings`,
       1, snap.shoppingBuildingCount > 0 ? 0 : 1),
+    result('building.roles-indexed', 'Building Assignments', 'Role buildings stay indexed',
+      failRoleIndexed > 0 ? 'warn' : 'pass',
+      failRoleIndexed > 0
+        ? `${failRoleIndexed}/${snap.buildingRoleIds.size} role buildings not indexed`
+        : `${snap.buildingRoleIds.size} OK`,
+      snap.buildingRoleIds.size, failRoleIndexed),
   ];
 }
 

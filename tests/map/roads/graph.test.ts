@@ -251,7 +251,7 @@ describe('RoadGraph.buildBuildingIndex', () => {
     expect(graph.getRandomBuildingDestination()).toBeNull();
   });
 
-  it('clears stale index on graph rebuild', async () => {
+  it('clears stale index via clearBuildingIndex', async () => {
     const graph = new RoadGraph();
     graph.build([makeRoad(1, [
       { lat: 34.0522, lng: -118.2437 },
@@ -264,6 +264,7 @@ describe('RoadGraph.buildBuildingIndex', () => {
       { lat: 34.0522, lng: -118.2437 },
       { lat: 34.0530, lng: -118.2437 },
     ])]);
+    graph.clearBuildingIndex();
     expect(graph.getRandomBuildingDestination()).toBeNull();
   });
 

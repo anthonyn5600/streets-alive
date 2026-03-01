@@ -182,6 +182,7 @@ export function buildRoadGeometryArrays(
     hwCasing: extractColoredLayerArrays(hwCasingColors),
     hwFill: extractColoredLayerArrays(hwFillColors),
     hwCenterLine: extractLayerArrays(hwCenterLineGeoms),
+    onewayArrows: null,
   };
 }
 

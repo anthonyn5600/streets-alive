@@ -36,6 +36,7 @@ export interface CachedRoadArrays {
   hwCasing: CachedColoredRoadLayer[];
   hwFill: CachedColoredRoadLayer[];
   hwCenterLine: CachedRoadLayerArrays | null;
+  onewayArrows: CachedRoadLayerArrays | null;
 }
 
 export interface CachedLabelPlacement {
@@ -103,7 +104,7 @@ const GEO_DB_NAME = 'geometry-cache';
 const GEO_STORE_NAME = 'geometry';
 const GEO_DB_VERSION = 1;
 const GEO_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 let geoDB: IDBDatabase | null = null;
 

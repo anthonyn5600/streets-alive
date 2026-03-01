@@ -19,6 +19,9 @@ CLAUDE.md
 # Runtime test results
 runtime-test-results.json
 
+# Test temp files
+tests/temp/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -48,7 +48,7 @@ describe('CarManager constructor', () => {
     const scene = new THREE.Scene();
     const cm = new CarManager(scene);
     expect(cm.getCarInfo()).toEqual([]);
-    expect(cm.getSelectedCarId()).toBeNull();
+    expect(cm.getSelectedCarIds().size).toBe(0);
     cm.dispose();
   });
 });
@@ -129,7 +129,7 @@ describe('CarManager.selectCar / deselectCar', () => {
     if (cars.length === 0) return;
 
     cm.selectCar(cars[0].id);
-    expect(cm.getSelectedCarId()).toBe(cars[0].id);
+    expect(cm.getSelectedCarIds().has(cars[0].id)).toBe(true);
     cm.dispose();
   });
 
@@ -143,7 +143,7 @@ describe('CarManager.selectCar / deselectCar', () => {
 
     cm.selectCar(cars[0].id);
     cm.deselectCar(cars[0].id);
-    expect(cm.getSelectedCarId()).toBeNull();
+    expect(cm.getSelectedCarIds().size).toBe(0);
     cm.dispose();
   });
 
@@ -157,7 +157,7 @@ describe('CarManager.selectCar / deselectCar', () => {
 
     cm.selectCar(cars[0].id);
     cm.deselectAll();
-    expect(cm.getSelectedCarId()).toBeNull();
+    expect(cm.getSelectedCarIds().size).toBe(0);
     cm.dispose();
   });
 });

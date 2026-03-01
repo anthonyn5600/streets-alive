@@ -18,6 +18,11 @@ export const ROAD_TOLERANCE = 15;
 export const NEED_THRESHOLD = 40;
 export const DROPOFF_DWELL = 5;
 
+const MARKER_Y = 35;
+const MARKER_SCALE = 20;
+const MARKER_BOB_AMPLITUDE = 3;
+const MARKER_BOB_SPEED = 2;
+
 interface DropoffStop {
   buildingId: number;
   personIds: number[];
@@ -43,7 +48,10 @@ interface Car {
   activity: ActivityType | null;
   dwellRemaining: number;
   dwellTotal: number;
+  originBuildingId: number | null;
   destinationBuildingId: number | null;
+  originMarker: THREE.Sprite | null;
+  destinationMarker: THREE.Sprite | null;
   roadDirX: number;
   roadDirZ: number;
   hidden: boolean;
@@ -68,6 +76,51 @@ function createRouteMaterial() {
     polygonOffsetFactor: -3,
     polygonOffsetUnits: -3,
   });
+}
+
+let originPinTexture: THREE.CanvasTexture | null = null;
+let destPinTexture: THREE.CanvasTexture | null = null;
+
+function createPinTexture(color: string, label: string): THREE.CanvasTexture {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+
+  if (ctx) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(128, 84, 64, Math.PI, 0);
+    ctx.lineTo(128, 220);
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.fillStyle = '#ffffff';
+    ctx.beginPath();
+    ctx.arc(128, 84, 36, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.fillStyle = color;
+    ctx.font = 'bold 44px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(label, 128, 88);
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function getOriginPinTexture(): THREE.CanvasTexture {
+  if (!originPinTexture) originPinTexture = createPinTexture('#22a855', 'A');
+  return originPinTexture;
+}
+
+function getDestPinTexture(): THREE.CanvasTexture {
+  if (!destPinTexture) destPinTexture = createPinTexture('#dd3333', 'B');
+  return destPinTexture;
 }
 
 function distToSegment(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
@@ -115,7 +168,7 @@ export class CarManager {
   private scene: THREE.Scene;
   private graph = new RoadGraph();
   private lastRoadVersion = -1;
-  private selectedCarId: number | null = null;
+  private selectedCarIds = new Set<number>();
   private stateThrottleTimer = 0;
   private carGeometry: THREE.BoxGeometry;
   private routeMaterial: THREE.MeshBasicMaterial;
@@ -127,6 +180,14 @@ export class CarManager {
   private spawnFailedHouseholds = new Set<number>();
   private spawnFailedClearTimer = 0;
   private buildAbort: AbortController | null = null;
+  private graphBusy = false;
+  private savedRoleParkings = new Map<number, {
+    centroidX: number; centroidZ: number;
+    parkX: number; parkZ: number;
+    dirX: number; dirZ: number;
+    roadType: string; roadName: string;
+  }>();
+  private elapsedTime = 0;
 
   population: PopulationManager | null = null;
   tripPlanner: TripPlanner | null = null;
@@ -152,15 +213,17 @@ export class CarManager {
     const abort = new AbortController();
     this.buildAbort = abort;
 
-    this.graph.build(roads);
-    if (buildings && buildings.length > 0) {
-      await this.graph.buildBuildingIndex(buildings, abort.signal);
-      if (abort.signal.aborted) return;
-    }
+    this.graphBusy = true;
 
-    if (this.parkingDebugEnabled) {
-      this.setParkingDebug(false);
-      this.setParkingDebug(true);
+    this.graph.build(roads);
+    if (!buildings || buildings.length === 0) {
+      this.graph.clearBuildingIndex();
+    } else {
+      await this.graph.buildBuildingIndex(buildings, abort.signal);
+      if (abort.signal.aborted) {
+        this.graphBusy = false;
+        return;
+      }
     }
 
     // Initialize population once we have enough buildings
@@ -169,7 +232,10 @@ export class CarManager {
       if (indexed.length >= 30) {
         this.population.init(indexed);
         const roles = this.population.getBuildingRoles();
-        this.graph.filterIndexedBuildings(new Set(roles.keys()));
+        const roleIds = new Set(roles.keys());
+        this.restoreMissingRoleBuildings(roleIds);
+        this.graph.filterIndexedBuildings(roleIds);
+        this.saveRoleParkings();
         // Remove legacy cars so population-driven cars replace them immediately
         for (const car of this.cars) {
           if (car.householdId === -1) {
@@ -180,6 +246,28 @@ export class CarManager {
         this.cars = this.cars.filter(c => !this.toRemove.has(c.id));
         this.toRemove.clear();
       }
+    } else if (this.population?.isInitialized() && buildings && buildings.length > 0) {
+      const roles = this.population.getBuildingRoles();
+      const roleIds = new Set(roles.keys());
+      this.restoreMissingRoleBuildings(roleIds);
+      this.graph.filterIndexedBuildings(roleIds);
+      this.saveRoleParkings();
+    }
+
+    this.graphBusy = false;
+
+    // Fix driving cars with stale destinations (building lost from index)
+    for (const car of this.cars) {
+      if (car.householdId !== -1 && car.destinationBuildingId !== null && car.state === 'driving') {
+        if (!this.graph.getBuildingDestination(car.destinationBuildingId)) {
+          this.continueNormalTrip(car);
+        }
+      }
+    }
+
+    if (this.parkingDebugEnabled) {
+      this.setParkingDebug(false);
+      this.setParkingDebug(true);
     }
 
     // Re-validate existing cars against new graph (cap re-routes per rebuild to limit Dijkstra cost)
@@ -254,7 +342,7 @@ export class CarManager {
     if (this.graph.nodes.length < 10) return;
 
     // If no population system, use legacy spawn
-    if (!this.population || !this.population.isInitialized()) {
+    if (!this.population) {
       let attempts = 0;
       while (this.cars.length < MAX_CARS && attempts < 3) {
         attempts++;
@@ -318,7 +406,10 @@ export class CarManager {
       activity: null,
       dwellRemaining: 0,
       dwellTotal: 0,
+      originBuildingId: null,
       destinationBuildingId: null,
+      originMarker: null,
+      destinationMarker: null,
       roadDirX: 0,
       roadDirZ: 0,
       hidden: false,
@@ -380,7 +471,10 @@ export class CarManager {
       activity: null,
       dwellRemaining: 0,
       dwellTotal: 0,
+      originBuildingId: household.buildingId,
       destinationBuildingId: null,
+      originMarker: null,
+      destinationMarker: null,
       roadDirX: 0,
       roadDirZ: 0,
       hidden: false,
@@ -391,7 +485,6 @@ export class CarManager {
     // Use trip planner for first destination (no lastActivity on first trip)
     const trip = this.tripPlanner.pickNextTrip(car.occupantIds, this.population, driverId, null);
     car.activity = trip.activity;
-    car.destinationBuildingId = trip.buildingId;
     car.dwellTotal = trip.dwellTime;
 
     this.assignRouteToBuilding(car, trip.buildingId, homeDest.nodeId);
@@ -415,10 +508,10 @@ export class CarManager {
       car.routeMesh.geometry.dispose();
       car.routeMesh = null;
     }
+    this.removeRouteMarkers(car);
     this.progressBars?.remove(car.id);
-    if (this.selectedCarId === car.id) {
-      this.selectedCarId = null;
-    }
+    this.selectedCarIds.delete(car.id);
+    car.selected = false;
     if (car.householdId !== -1 && this.population) {
       this.population.markHouseholdCarActive(car.householdId, false);
       // Return all occupants home
@@ -451,7 +544,7 @@ export class CarManager {
       const nodePath = this.graph.dijkstra(start, end);
       if (!nodePath || nodePath.length < 2) continue;
 
-      const waypoints = this.graph.getRouteWaypointsWithOffset(nodePath);
+      const waypoints = this.graph.getRouteWaypointsWithOffset(nodePath, true);
       if (waypoints.length < 2) continue;
 
       const types = this.graph.getRouteRoadTypes(nodePath);
@@ -491,6 +584,8 @@ export class CarManager {
       if (car.selected) {
         car.routeMesh = this.createRouteMesh(waypoints);
         if (car.routeMesh) this.scene.add(car.routeMesh);
+        this.removeRouteMarkers(car);
+        this.createRouteMarkers(car);
       }
 
       return;
@@ -509,19 +604,21 @@ export class CarManager {
 
     const dest = this.graph.getBuildingDestination(buildingId);
     if (!dest) {
-      // Fallback to random
+      car.destinationBuildingId = null;
       this.assignRoute(car, start);
       return;
     }
 
     const nodePath = this.graph.dijkstra(start, dest.nodeId);
     if (!nodePath || nodePath.length < 2) {
+      car.destinationBuildingId = null;
       this.assignRoute(car, start);
       return;
     }
 
-    const waypoints = this.graph.getRouteWaypointsWithOffset(nodePath);
+    const waypoints = this.graph.getRouteWaypointsWithOffset(nodePath, true);
     if (waypoints.length < 2) {
+      car.destinationBuildingId = null;
       this.assignRoute(car, start);
       return;
     }
@@ -557,12 +654,22 @@ export class CarManager {
     if (car.selected) {
       car.routeMesh = this.createRouteMesh(waypoints);
       if (car.routeMesh) this.scene.add(car.routeMesh);
+      this.removeRouteMarkers(car);
+      this.createRouteMarkers(car);
     }
   }
 
   private parkCar(car: Car) {
     car.state = 'parked';
+    car.originBuildingId = car.destinationBuildingId;
     car.dwellRemaining = car.dwellTotal;
+
+    if (import.meta.env.DEV && this.population?.isInitialized() && car.destinationBuildingId !== null) {
+      const roles = this.population!.getBuildingRoles();
+      if (!roles.has(car.destinationBuildingId)) {
+        console.warn('[CarManager] car', car.id, 'parked at building', car.destinationBuildingId, 'with no role');
+      }
+    }
 
     // Snap to final position
     const last = car.waypoints[car.waypoints.length - 1];
@@ -694,6 +801,7 @@ export class CarManager {
     const nextStop = car.pendingDropoffs[0];
     car.isDropoffTrip = true;
     car.activity = 'social';
+    car.originBuildingId = car.destinationBuildingId;
     car.destinationBuildingId = nextStop.buildingId;
     car.dwellTotal = DROPOFF_DWELL;
     car.dwellRemaining = 0;
@@ -801,7 +909,8 @@ export class CarManager {
     const allOccupants = [...car.occupantIds, ...car.guestOccupantIds];
     const trip = this.tripPlanner.pickNextTrip(allOccupants, this.population, driverId, car.activity);
     car.activity = trip.activity;
-    car.destinationBuildingId = trip.buildingId;
+    car.originBuildingId = car.destinationBuildingId;
+    car.destinationBuildingId = null;
     car.dwellTotal = trip.dwellTime;
     car.dwellRemaining = 0;
 
@@ -815,6 +924,27 @@ export class CarManager {
 
   private findNearestNode(x: number, z: number): number | null {
     return this.graph.findNearestNode(x, z);
+  }
+
+  private saveRoleParkings(): void {
+    for (const ib of this.graph.getIndexedBuildings()) {
+      const node = this.graph.nodes[ib.nearestNodeId];
+      if (!node) continue;
+      this.savedRoleParkings.set(ib.buildingId, {
+        centroidX: ib.centroidX, centroidZ: ib.centroidZ,
+        parkX: node.x, parkZ: node.z,
+        dirX: ib.roadDirX, dirZ: ib.roadDirZ,
+        roadType: ib.roadType, roadName: ib.roadName,
+      });
+    }
+  }
+
+  private restoreMissingRoleBuildings(roleIds: Set<number>): void {
+    for (const [buildingId, saved] of this.savedRoleParkings) {
+      if (!roleIds.has(buildingId)) continue;
+      if (this.graph.getBuildingDestination(buildingId)) continue;
+      this.graph.restoreBuilding(buildingId, saved);
+    }
   }
 
   private createRouteMesh(waypoints: Array<{ x: number; y: number; z: number }>): THREE.Mesh | null {
@@ -849,21 +979,83 @@ export class CarManager {
     return new THREE.Mesh(geom, this.routeMaterial);
   }
 
-  selectCar(carId: number) {
-    if (this.selectedCarId !== null) {
-      this.deselectCar(this.selectedCarId);
+  private createRouteMarkers(car: Car) {
+    this.removeRouteMarkers(car);
+
+    let originPos: { x: number; z: number } | null = null;
+    let destPos: { x: number; z: number } | null = null;
+
+    if (car.originBuildingId !== null) {
+      const dest = this.graph.getBuildingDestination(car.originBuildingId);
+      if (dest) originPos = { x: dest.buildingX, z: dest.buildingZ };
+    }
+    if (!originPos && car.waypoints.length > 0) {
+      originPos = { x: car.waypoints[0].x, z: car.waypoints[0].z };
     }
 
+    if (car.destinationBuildingId !== null) {
+      const dest = this.graph.getBuildingDestination(car.destinationBuildingId);
+      if (dest) destPos = { x: dest.buildingX, z: dest.buildingZ };
+    }
+    if (!destPos && car.waypoints.length > 0) {
+      const last = car.waypoints[car.waypoints.length - 1];
+      destPos = { x: last.x, z: last.z };
+    }
+
+    if (originPos) {
+      const mat = new THREE.SpriteMaterial({
+        map: getOriginPinTexture(),
+        depthTest: false,
+        sizeAttenuation: true,
+      });
+      const sprite = new THREE.Sprite(mat);
+      sprite.position.set(originPos.x, MARKER_Y, originPos.z);
+      sprite.scale.set(MARKER_SCALE, MARKER_SCALE, 1);
+      sprite.renderOrder = 15;
+      this.scene.add(sprite);
+      car.originMarker = sprite;
+    }
+
+    if (destPos) {
+      const mat = new THREE.SpriteMaterial({
+        map: getDestPinTexture(),
+        depthTest: false,
+        sizeAttenuation: true,
+      });
+      const sprite = new THREE.Sprite(mat);
+      sprite.position.set(destPos.x, MARKER_Y, destPos.z);
+      sprite.scale.set(MARKER_SCALE, MARKER_SCALE, 1);
+      sprite.renderOrder = 15;
+      this.scene.add(sprite);
+      car.destinationMarker = sprite;
+    }
+  }
+
+  private removeRouteMarkers(car: Car) {
+    if (car.originMarker) {
+      this.scene.remove(car.originMarker);
+      car.originMarker.material.dispose();
+      car.originMarker = null;
+    }
+    if (car.destinationMarker) {
+      this.scene.remove(car.destinationMarker);
+      car.destinationMarker.material.dispose();
+      car.destinationMarker = null;
+    }
+  }
+
+  selectCar(carId: number) {
     const car = this.cars.find(c => c.id === carId);
     if (!car) return;
 
     car.selected = true;
-    this.selectedCarId = carId;
+    this.selectedCarIds.add(carId);
 
     if (!car.routeMesh && car.waypoints.length >= 2) {
       car.routeMesh = this.createRouteMesh(car.waypoints);
       if (car.routeMesh) this.scene.add(car.routeMesh);
     }
+    this.createRouteMarkers(car);
   }
 
   deselectCar(carId: number) {
@@ -876,20 +1068,18 @@ export class CarManager {
       car.routeMesh.geometry.dispose();
       car.routeMesh = null;
     }
-
-    if (this.selectedCarId === carId) {
-      this.selectedCarId = null;
-    }
+    this.removeRouteMarkers(car);
+    this.selectedCarIds.delete(carId);
   }
 
   deselectAll() {
-    if (this.selectedCarId !== null) {
-      this.deselectCar(this.selectedCarId);
+    for (const carId of [...this.selectedCarIds]) {
+      this.deselectCar(carId);
     }
   }
 
-  getSelectedCarId(): number | null {
-    return this.selectedCarId;
+  getSelectedCarIds(): Set<number> {
+    return this.selectedCarIds;
   }
 
   getCarAtPosition(raycaster: THREE.Raycaster): number | null {
@@ -988,10 +1178,17 @@ export class CarManager {
 
     const group = new THREE.Group();
     const indexed = this.graph.getIndexedBuildings();
+    const roles = this.population?.getBuildingRoles();
     const rectW = 2, rectL = 5;
-    const mat = new THREE.LineBasicMaterial({ color: 0xff0000 });
+    const roleMats: Record<string, THREE.LineBasicMaterial> = {
+      home: new THREE.LineBasicMaterial({ color: 0x8BC34A }),
+      work: new THREE.LineBasicMaterial({ color: 0x64B5F6 }),
+      shopping: new THREE.LineBasicMaterial({ color: 0xFFB74D }),
+    };
 
     for (const b of indexed) {
+      const role = roles?.get(b.buildingId);
+      if (!role) continue;
       if (b.roadDirX === 0 && b.roadDirZ === 0) continue;
       const node = this.graph.nodes[b.nearestNodeId];
       if (!node) continue;
@@ -1025,7 +1222,7 @@ export class CarManager {
 
       const geom = new THREE.BufferGeometry();
       geom.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
-      group.add(new THREE.LineSegments(geom, mat));
+      group.add(new THREE.LineSegments(geom, roleMats[role]));
     }
 
     this.parkingDebugGroup = group;
@@ -1051,6 +1248,15 @@ export class CarManager {
           if (info) occupants.push(info);
         }
       }
+      const originAddress = c.originBuildingId !== null
+        ? this.graph.getBuildingRoadName(c.originBuildingId) : null;
+      const destinationAddress = c.destinationBuildingId !== null
+        ? this.graph.getBuildingRoadName(c.destinationBuildingId) : null;
+      const originDest = c.originBuildingId !== null
+        ? this.graph.getBuildingDestination(c.originBuildingId) : null;
+      const destDest = c.destinationBuildingId !== null
+        ? this.graph.getBuildingDestination(c.destinationBuildingId) : null;
+
       return {
         id: c.id,
         color: c.color,
@@ -1066,6 +1272,15 @@ export class CarManager {
         dwellProgress: c.dwellTotal > 0 ? 1 - c.dwellRemaining / c.dwellTotal : 0,
         dwellRemaining: c.dwellRemaining,
         householdId: c.householdId,
+        routeProgress: c.state === 'driving' && c.waypoints.length > 1
+          ? (c.waypointIndex + c.progress) / (c.waypoints.length - 1)
+          : -1,
+        originBuildingId: c.originBuildingId,
+        destinationBuildingId: c.destinationBuildingId,
+        originAddress,
+        destinationAddress,
+        originPos: originDest ? { x: originDest.buildingX, z: originDest.buildingZ } : null,
+        destinationPos: destDest ? { x: destDest.buildingX, z: destDest.buildingZ } : null,
       };
     });
   }
@@ -1177,11 +1392,18 @@ export class CarManager {
       this.cars = this.cars.filter(c => !toRemove.has(c.id));
     }
 
+    this.elapsedTime += deltaTime;
+    const bobOffset = Math.sin(this.elapsedTime * MARKER_BOB_SPEED) * MARKER_BOB_AMPLITUDE;
+    for (const car of this.cars) {
+      if (car.originMarker) car.originMarker.position.y = MARKER_Y + bobOffset;
+      if (car.destinationMarker) car.destinationMarker.position.y = MARKER_Y + bobOffset;
+    }
+
     // Spawn new cars periodically (every 2s instead of every frame)
     this.spawnTimer += deltaTime;
     if (this.spawnTimer >= 0.25) {
       this.spawnTimer = 0;
-      this.spawnCars();
+      if (!this.graphBusy) this.spawnCars();
     }
     this.spawnFailedClearTimer += deltaTime;
     if (this.spawnFailedClearTimer >= 10) {
@@ -1199,6 +1421,7 @@ export class CarManager {
 
   private updateParked(car: Car, deltaTime: number) {
     if (!this.population) return;
+    if (this.graphBusy) return;
 
     // Apply activity restore to all occupants (including guests)
     if (car.activity) {
@@ -1235,10 +1458,14 @@ export class CarManager {
         this.scene.remove(car.routeMesh);
         car.routeMesh.geometry.dispose();
       }
+      this.removeRouteMarkers(car);
     }
     this.cars = [];
+    this.selectedCarIds.clear();
     this.carGeometry.dispose();
     this.routeMaterial.dispose();
     for (const mat of this.carMaterials.values()) mat.dispose();
+    if (originPinTexture) { originPinTexture.dispose(); originPinTexture = null; }
+    if (destPinTexture) { destPinTexture.dispose(); destPinTexture = null; }
   }
 }

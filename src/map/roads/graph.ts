@@ -22,6 +22,7 @@ export interface GraphEdge {
   distance: number;
   cost: number;
   roadType: string;
+  name: string;
   waypoints: Array<{ x: number; y: number; z: number }>;
 }
 
@@ -52,6 +53,7 @@ export interface IndexedBuilding {
   roadDirX: number;
   roadDirZ: number;
   roadType: string;
+  roadName: string;
 }
 
 const CLUSTER_TOLERANCE = 10; // meters
@@ -235,8 +237,6 @@ export class RoadGraph {
     this.nodes = [];
     this.adjacency = new Map();
     this.grid = new Map();
-    this.indexedBuildings = [];
-    this.buildingMap = new Map();
     this.intersectionNodes = new Set();
 
     for (const road of roads) {
@@ -278,13 +278,13 @@ export class RoadGraph {
         if (effectiveOneway >= 0) {
           this.adjacency.get(fromNode)!.push({
             from: fromNode, to: toNode, distance: segDist,
-            cost, roadType: road.type, waypoints: wp,
+            cost, roadType: road.type, name: road.name, waypoints: wp,
           });
         }
         if (effectiveOneway <= 0) {
           this.adjacency.get(toNode)!.push({
             from: toNode, to: fromNode, distance: segDist,
-            cost, roadType: road.type, waypoints: [...wp].reverse(),
+            cost, roadType: road.type, name: road.name, waypoints: [...wp].reverse(),
           });
         }
 
@@ -519,13 +519,13 @@ export class RoadGraph {
     if (wpA.length >= 2 && distA >= MIN_SUBEDGE_LEN) {
       this.adjacency.get(edge.from)!.push({
         from: edge.from, to: parkingId, distance: distA,
-        cost: distA * (2 - speed), roadType: edge.roadType, waypoints: wpA,
+        cost: distA * (2 - speed), roadType: edge.roadType, name: edge.name, waypoints: wpA,
       });
     }
     if (wpB.length >= 2 && distB >= MIN_SUBEDGE_LEN) {
       this.adjacency.get(parkingId)!.push({
         from: parkingId, to: edge.to, distance: distB,
-        cost: distB * (2 - speed), roadType: edge.roadType, waypoints: wpB,
+        cost: distB * (2 - speed), roadType: edge.roadType, name: edge.name, waypoints: wpB,
       });
     }
 
@@ -540,13 +540,13 @@ export class RoadGraph {
         if (wpBRev.length >= 2 && distB >= MIN_SUBEDGE_LEN) {
           revEdges.push({
             from: edge.to, to: parkingId, distance: distB,
-            cost: distB * (2 - speed), roadType: edge.roadType, waypoints: wpBRev,
+            cost: distB * (2 - speed), roadType: edge.roadType, name: edge.name, waypoints: wpBRev,
           });
         }
         if (wpARev.length >= 2 && distA >= MIN_SUBEDGE_LEN) {
           this.adjacency.get(parkingId)!.push({
             from: parkingId, to: edge.from, distance: distA,
-            cost: distA * (2 - speed), roadType: edge.roadType, waypoints: wpARev,
+            cost: distA * (2 - speed), roadType: edge.roadType, name: edge.name, waypoints: wpARev,
           });
         }
       }
@@ -692,9 +692,17 @@ export class RoadGraph {
     return this.carSpawnNodes[Math.floor(Math.random() * this.carSpawnNodes.length)];
   }
 
-  async buildBuildingIndex(buildings: BuildingData[], signal?: AbortSignal) {
+  clearBuildingIndex(): void {
     this.indexedBuildings = [];
-    if (this.connectedNodes.length === 0) return;
+    this.buildingMap.clear();
+  }
+
+  async buildBuildingIndex(buildings: BuildingData[], signal?: AbortSignal) {
+    if (this.connectedNodes.length === 0) {
+      this.indexedBuildings = [];
+      this.rebuildBuildingMap();
+      return;
+    }
 
     // Build segment spatial grid (50m cells) for O(1) nearest-segment lookup
     const SEG_CELL = 50;
@@ -746,6 +754,8 @@ export class RoadGraph {
       if (!intNodeGrid.has(key)) intNodeGrid.set(key, []);
       intNodeGrid.get(key)!.push({ x: n.x, z: n.z });
     }
+
+    const newIndex: IndexedBuilding[] = [];
 
     const YIELD_BATCH = 100;
     for (let bi = 0; bi < buildings.length; bi++) {
@@ -901,7 +911,7 @@ export class RoadGraph {
         dirX = -dirX; dirZ = -dirZ;
       }
 
-      const ib: IndexedBuilding = {
+      newIndex.push({
         buildingId: b.id,
         centroidX: centroid.x,
         centroidZ: centroid.z,
@@ -909,10 +919,15 @@ export class RoadGraph {
         roadDirX: dirX,
         roadDirZ: dirZ,
         roadType: bestEdge.roadType,
-      };
-      this.indexedBuildings.push(ib);
-      this.buildingMap.set(b.id, ib);
+        roadName: bestEdge.name,
+      });
     }
+
+    if (signal?.aborted) return;
+
+    // Atomic swap: old index stays visible until fully built
+    this.indexedBuildings = newIndex;
+    this.rebuildBuildingMap();
 
     await this.scanAndRemoveIntersectionParking(signal);
   }
@@ -1031,6 +1046,7 @@ export class RoadGraph {
           b.nearestNodeId = newNodeId;
           b.roadDirX = dirX;
           b.roadDirZ = dirZ;
+          b.roadName = edge.name;
           relocated = true;
           break;
         }
@@ -1065,9 +1081,68 @@ export class RoadGraph {
     return { nodeId: b.nearestNodeId, buildingX: b.centroidX, buildingZ: b.centroidZ, roadDirX: b.roadDirX, roadDirZ: b.roadDirZ, roadType: b.roadType };
   }
 
+  getBuildingRoadName(buildingId: number): string | null {
+    const b = this.buildingMap.get(buildingId);
+    return b?.roadName || null;
+  }
+
   filterIndexedBuildings(keepIds: Set<number>): void {
     this.indexedBuildings = this.indexedBuildings.filter(b => keepIds.has(b.buildingId));
     this.rebuildBuildingMap();
+  }
+
+  restoreBuilding(buildingId: number, saved: {
+    centroidX: number; centroidZ: number;
+    parkX: number; parkZ: number;
+    dirX: number; dirZ: number;
+    roadType: string; roadName: string;
+  }): boolean {
+    if (this.buildingMap.has(buildingId)) return true;
+
+    const cell = this.spatialCellSize;
+    const cx = Math.floor(saved.parkX / cell);
+    const cz = Math.floor(saved.parkZ / cell);
+
+    let bestEdge: GraphEdge | null = null;
+    let bestProj: ProjectionResult | null = null;
+    let bestDistSq = Infinity;
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const bucket = this.spatialGrid.get(`${cx + dx},${cz + dz}`);
+        if (!bucket) continue;
+        for (const nodeId of bucket) {
+          const edges = this.adjacency.get(nodeId);
+          if (!edges) continue;
+          for (const edge of edges) {
+            if (isHighwayType(edge.roadType)) continue;
+            const wp2d = edge.waypoints.map(w => ({ x: w.x, z: w.z }));
+            const proj = projectOnPolyline(saved.parkX, saved.parkZ, wp2d);
+            if (!proj || proj.distSq >= bestDistSq) continue;
+            bestDistSq = proj.distSq;
+            bestEdge = edge;
+            bestProj = proj;
+          }
+        }
+      }
+    }
+
+    if (!bestEdge || !bestProj || bestDistSq > 30 * 30) return false;
+
+    const parkingNodeId = this.insertParkingNode(bestEdge, bestProj);
+    const ib: IndexedBuilding = {
+      buildingId,
+      centroidX: saved.centroidX,
+      centroidZ: saved.centroidZ,
+      nearestNodeId: parkingNodeId,
+      roadDirX: saved.dirX,
+      roadDirZ: saved.dirZ,
+      roadType: saved.roadType,
+      roadName: saved.roadName,
+    };
+    this.indexedBuildings.push(ib);
+    this.buildingMap.set(buildingId, ib);
+    return true;
   }
 
   getIndexedBuildings(): IndexedBuilding[] {

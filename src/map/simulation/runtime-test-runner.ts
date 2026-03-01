@@ -50,6 +50,7 @@ export class RuntimeTestRunner {
         locationCarId: p.location.carId,
       })),
       indexedBuildingIds: carManager.getIndexedBuildingIds(),
+      buildingRoleIds: new Set(population.getBuildingRoles().keys()),
       shoppingBuildingCount: population.shoppingBuildingIds.size,
       populationInitialized: population.isInitialized(),
     };

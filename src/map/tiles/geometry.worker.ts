@@ -4,6 +4,7 @@ import {
   getRoadPriority,
   isDividedRoad,
   isHighwayType,
+  isDefaultOneway,
   HIGHWAY_MASK_EXTRA,
   HIGHWAY_SHADOW_EXTRA,
 } from '../roads/style';
@@ -290,6 +291,80 @@ function appendDashedRibbon(
   }
 }
 
+// --- Chevron (one-way arrow) geometry ---
+
+const CHEVRON_SPACING = 60;
+const CHEVRON_START_OFFSET = 20;
+const CHEVRON_HALF_LEN = 1.5;
+const CHEVRON_Y = 0.42;
+
+function appendChevrons(
+  bucket: ArrayBucket,
+  pts: Array<{ x: number; z: number }>,
+  oneway: 1 | -1,
+  halfWidth: number,
+  yOffset: number,
+): void {
+  if (pts.length < 2) return;
+
+  const segLens: number[] = [];
+  let totalLen = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const dx = pts[i].x - pts[i - 1].x;
+    const dz = pts[i].z - pts[i - 1].z;
+    segLens.push(Math.sqrt(dx * dx + dz * dz));
+    totalLen += segLens[i - 1];
+  }
+
+  if (totalLen < CHEVRON_START_OFFSET + CHEVRON_HALF_LEN * 2) return;
+
+  let dist = CHEVRON_START_OFFSET;
+  while (dist < totalLen - CHEVRON_HALF_LEN) {
+    let accum = 0;
+    for (let i = 0; i < segLens.length; i++) {
+      if (accum + segLens[i] >= dist) {
+        const segLen = segLens[i];
+        if (segLen < 0.001) break;
+
+        const t = (dist - accum) / segLen;
+        const cx = pts[i].x + (pts[i + 1].x - pts[i].x) * t;
+        const cz = pts[i].z + (pts[i + 1].z - pts[i].z) * t;
+
+        const dx = pts[i + 1].x - pts[i].x;
+        const dz = pts[i + 1].z - pts[i].z;
+        let dirX = dx / segLen;
+        let dirZ = dz / segLen;
+
+        if (oneway === -1) {
+          dirX = -dirX;
+          dirZ = -dirZ;
+        }
+
+        const normX = -dirZ;
+        const normZ = dirX;
+
+        const tipX = cx + dirX * CHEVRON_HALF_LEN;
+        const tipZ = cz + dirZ * CHEVRON_HALF_LEN;
+        const leftX = cx - dirX * CHEVRON_HALF_LEN + normX * halfWidth;
+        const leftZ = cz - dirZ * CHEVRON_HALF_LEN + normZ * halfWidth;
+        const rightX = cx - dirX * CHEVRON_HALF_LEN - normX * halfWidth;
+        const rightZ = cz - dirZ * CHEVRON_HALF_LEN - normZ * halfWidth;
+
+        const base = bucket.vertexCount;
+        bucket.positions.push(tipX, yOffset, tipZ);
+        bucket.positions.push(leftX, yOffset, leftZ);
+        bucket.positions.push(rightX, yOffset, rightZ);
+
+        bucket.indices.push(base, base + 1, base + 2);
+        bucket.vertexCount += 3;
+        break;
+      }
+      accum += segLens[i];
+    }
+    dist += CHEVRON_SPACING;
+  }
+}
+
 // --- Road geometry builder ---
 
 const LOCAL_CASING_Y = 0.05;
@@ -339,6 +414,7 @@ function buildRoadArrays(
   const hwCenterLineBucket = newBucket();
   const hwMaskBucket = newBucket();
   const hwShadowBucket = newBucket();
+  const onewayBucket = newBucket();
 
   for (const road of roads) {
     const style = getRoadStyle(road.type, zoomLevel);
@@ -400,6 +476,14 @@ function buildRoadArrays(
       if (!casingColors.has(style.casingColor)) casingColors.set(style.casingColor, newBucket());
       appendRibbon(casingColors.get(style.casingColor)!, pts, style.casingWidth / 2, casingY, undefined, normals);
     }
+
+    if (!isHw) {
+      const effectiveOneway = road.oneway !== 0 ? road.oneway : (isDefaultOneway(road.type) ? 1 : 0);
+      if (effectiveOneway !== 0) {
+        const arrowHalfWidth = Math.min(style.fillWidth * 0.3, 1.5);
+        appendChevrons(onewayBucket, pts, effectiveOneway as 1 | -1, arrowHalfWidth, CHEVRON_Y);
+      }
+    }
   }
 
   return {
@@ -411,6 +495,7 @@ function buildRoadArrays(
     hwCasing: colorBucketsToLayers(hwCasingColors),
     hwFill: colorBucketsToLayers(hwFillColors),
     hwCenterLine: bucketToLayerArrays(hwCenterLineBucket),
+    onewayArrows: bucketToLayerArrays(onewayBucket),
   };
 }
 
@@ -505,6 +590,7 @@ function collectTransferables(
   addColoredLayers(roads.hwCasing);
   addColoredLayers(roads.hwFill);
   addLayer(roads.hwCenterLine);
+  addLayer(roads.onewayArrows);
 
   return Array.from(buffers);
 }

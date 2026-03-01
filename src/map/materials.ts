@@ -32,6 +32,7 @@ class MaterialPool {
   private hwCenterLineMat: THREE.MeshBasicMaterial | null = null;
   private localVertexColorMat: THREE.MeshBasicMaterial | null = null;
   private hwVertexColorMat: THREE.MeshBasicMaterial | null = null;
+  private onewayArrowsMat: THREE.MeshBasicMaterial | null = null;
 
   getBuilding(): THREE.MeshLambertMaterial {
     if (!this.buildingMat) {
@@ -193,6 +194,27 @@ transformed.y *= bldgScale;`
     return this.hwVertexColorMat;
   }
 
+  getOnewayArrows(): THREE.MeshBasicMaterial {
+    if (!this.onewayArrowsMat) {
+      this.onewayArrowsMat = new THREE.MeshBasicMaterial({
+        color: 0xffffff,
+        transparent: true,
+        opacity: 0.55,
+        depthWrite: false,
+        side: THREE.FrontSide,
+        polygonOffset: true,
+        polygonOffsetFactor: -3,
+        polygonOffsetUnits: -3,
+        stencilWrite: false,
+        stencilFunc: THREE.NotEqualStencilFunc,
+        stencilRef: 1,
+        stencilFuncMask: 0xff,
+      });
+      this.onewayArrowsMat.userData.shared = true;
+    }
+    return this.onewayArrowsMat;
+  }
+
   getHighwayCenterLine(): THREE.MeshBasicMaterial {
     if (!this.hwCenterLineMat) {
       this.hwCenterLineMat = new THREE.MeshBasicMaterial({
@@ -224,6 +246,8 @@ transformed.y *= bldgScale;`
     this.localVertexColorMat = null;
     this.hwVertexColorMat?.dispose();
     this.hwVertexColorMat = null;
+    this.onewayArrowsMat?.dispose();
+    this.onewayArrowsMat = null;
   }
 }
 

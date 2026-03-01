@@ -10,7 +10,7 @@ import { setCenter, project, unproject } from './projection';
 import { openTileCache, evictOldTiles, evictExcessTiles } from './tiles/vector-tiles';
 import { geometryCache, openGeometryCache, evictOldGeometry, evictExcessGeometry } from './tiles/geometry-cache';
 import { materialPool } from './materials';
-import type { SimCarInfo, HouseholdInfo, MapState, LatLng, RuntimeTestResult, BBox, RoadData, TileKey } from './types';
+import type { SimCarInfo, HouseholdInfo, MapState, LatLng, RuntimeTestResult, BBox, RoadData, TileKey, BuildingData } from './types';
 import type { BuildingRole } from './simulation/population';
 
 const _clickNdc = new THREE.Vector2();
@@ -73,6 +73,7 @@ export class MapEngine {
   private evictionIntervalId: ReturnType<typeof setInterval> | null = null;
   private persistentRoadData = new Map<TileKey, RoadData[]>();
   private persistentRoadVersion = 0;
+  private persistentSimBuildings = new Map<number, BuildingData>();
   private stateDirty = false;
   private stateRafId: number | null = null;
 
@@ -182,14 +183,12 @@ export class MapEngine {
 
     const hitCarId = this.carManager.getCarAtPosition(this.raycaster);
     if (hitCarId !== null) {
-      const currentSelected = this.carManager.getSelectedCarId();
-      if (currentSelected === hitCarId) {
+      const selected = this.carManager.getSelectedCarIds();
+      if (selected.has(hitCarId)) {
         this.carManager.deselectCar(hitCarId);
       } else {
         this.carManager.selectCar(hitCarId);
       }
-    } else {
-      this.carManager.deselectAll();
     }
   };
 
@@ -217,8 +216,12 @@ export class MapEngine {
     this.carManager.selectCar(id);
   }
 
-  deselectCar() {
-    this.carManager.deselectAll();
+  deselectCar(carId?: number) {
+    if (carId !== undefined) {
+      this.carManager.deselectCar(carId);
+    } else {
+      this.carManager.deselectAll();
+    }
   }
 
   getCarInfo(): SimCarInfo[] {
@@ -282,13 +285,32 @@ export class MapEngine {
     // Prune tiles beyond ~20km from camera center
     this.prunePersistentRoads();
 
-    // Roads from persistent store, buildings from loaded tiles only
+    // Roads from persistent store, buildings from loaded tiles + persistent sim buildings
     const roads: RoadData[] = [];
     for (const tileRoads of this.persistentRoadData.values()) {
       roads.push(...tileRoads);
     }
     const buildings = this.tileManager.getAllBuildingData();
+
+    // Ensure sim-critical buildings survive tile unloads
+    if (this.persistentSimBuildings.size > 0) {
+      const loadedIds = new Set(buildings.map(b => b.id));
+      for (const [id, data] of this.persistentSimBuildings) {
+        if (!loadedIds.has(id)) buildings.unshift(data);
+      }
+    }
+
     await this.carManager.rebuildGraph(roads, this.persistentRoadVersion, buildings);
+
+    // Capture role buildings into persistent store so they survive tile unloads
+    if (this.populationManager.isInitialized()) {
+      const roles = this.populationManager.getBuildingRoles();
+      for (const b of buildings) {
+        if (roles.has(b.id) && !this.persistentSimBuildings.has(b.id)) {
+          this.persistentSimBuildings.set(b.id, b);
+        }
+      }
+    }
 
     if (!this.buildingColorsApplied && this.populationManager.isInitialized()) {
       this.buildingColorsApplied = true;
@@ -448,6 +470,7 @@ export class MapEngine {
     this.carManager.dispose();
     this.tileManager.dispose();
     this.persistentRoadData.clear();
+    this.persistentSimBuildings.clear();
     geometryCache.clear();
     materialPool.dispose();
     this.cameraController.dispose();
