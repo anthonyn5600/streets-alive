@@ -1,73 +1,57 @@
-# React + TypeScript + Vite
+# Streets Alive
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A 3D city map engine with a life simulation layer. Built with Three.js, React, and Vite.
 
-Currently, two official plugins are available:
+Loads [OpenFreeMap](https://openfreemap.org/) vector tiles (PBF) at zoom 14, decodes buildings and roads in a Web Worker pool, and renders extruded buildings with ribbon-geometry roads in real time. A simulation layer generates households with people who have needs, make decisions through a trip planner, and drive Dijkstra-routed cars across the road network.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Features
 
-## React Compiler
+- **3D Buildings** — Earcut-triangulated and extruded from vector tile polygons, with a distance-based flatten shader
+- **Road Network** — 16 road types with fill, casing, and center lines; divided lanes for major roads; highway elevation tiers with smooth ramps
+- **Life Simulation** — Households with people who have needs (energy, social, money, fun, health) that decay over time; a trip planner scores activities by urgency and picks destinations
+- **Car Traffic** — Cars spawn from households, follow Dijkstra-routed paths, animate along roads with a driving/parked state machine, and show activity progress bars
+- **Performance** — Unified GPU buffers per layer to minimize draw calls, LRU + IndexedDB geometry caching, async yielding to keep the main thread responsive, and a parallel worker pool for tile decoding
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Getting Started
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Open `http://localhost:5173` in your browser.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Scripts
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+| Command | Description |
+|---------|-------------|
+| `npm run dev` | Start dev server with HMR |
+| `npm run build` | Type-check and build for production |
+| `npm run test` | Run test suite (Vitest) |
+| `npm run preview` | Preview production build |
+
+## Architecture
+
 ```
+PBF tile -> WorkerPool (decode + triangulate + ribbon build)
+  -> GeometryCache (LRU + IndexedDB)
+  -> GlobalMeshManager (unified per-layer BufferGeometries)
+  -> MaterialPool (shared materials with custom shaders)
+  -> THREE.Scene
+```
+
+```
+PopulationManager (households, people, needs, decay)
+  -> TripPlanner (score activities by need urgency)
+  -> CarManager (Dijkstra routes, animation, state machine)
+  -> ProgressBarManager (activity bars above parked cars)
+```
+
+## Tech Stack
+
+- **Rendering:** Three.js
+- **Frontend:** React, TypeScript, Vite
+- **UI:** Radix UI, shadcn/ui, Tailwind CSS
+- **Tiles:** OpenFreeMap (Mapbox Vector Tiles / PBF)
+- **Geometry:** Earcut triangulation, custom ribbon builder with miter joins
+- **Testing:** Vitest
