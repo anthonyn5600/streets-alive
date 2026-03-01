@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { RoadGraph, SPEED_WEIGHTS } from './roads/graph';
-import { computeMiterNormals } from './roads/renderer';
+import { computeMiterNormals } from './roads/miter';
 import { getLaneOffset, getParkingOffset } from './roads/style';
 import type { PopulationManager } from './simulation/population';
 import type { TripPlanner } from './simulation/trip-planner';
@@ -123,6 +123,10 @@ export class CarManager {
   private toRemove = new Set<number>();
   private parkingDebugGroup: THREE.Group | null = null;
   private parkingDebugEnabled = false;
+  private spawnTimer = 0;
+  private spawnFailedHouseholds = new Set<number>();
+  private spawnFailedClearTimer = 0;
+  private buildAbort: AbortController | null = null;
 
   population: PopulationManager | null = null;
   tripPlanner: TripPlanner | null = null;
@@ -140,12 +144,18 @@ export class CarManager {
     }
   }
 
-  rebuildGraph(roads: RoadData[], version: number, buildings?: BuildingData[]) {
+  async rebuildGraph(roads: RoadData[], version: number, buildings?: BuildingData[]) {
     if (version === this.lastRoadVersion) return;
     this.lastRoadVersion = version;
+
+    if (this.buildAbort) this.buildAbort.abort();
+    const abort = new AbortController();
+    this.buildAbort = abort;
+
     this.graph.build(roads);
     if (buildings && buildings.length > 0) {
-      this.graph.buildBuildingIndex(buildings);
+      await this.graph.buildBuildingIndex(buildings, abort.signal);
+      if (abort.signal.aborted) return;
     }
 
     if (this.parkingDebugEnabled) {
@@ -172,7 +182,8 @@ export class CarManager {
       }
     }
 
-    // Re-validate existing cars against new graph
+    // Re-validate existing cars against new graph (cap re-routes per rebuild to limit Dijkstra cost)
+    let rerouted = 0;
     for (const car of this.cars) {
       // Check if car is near any graph node (tile loaded)
       const nearest = this.findNearestNode(car.mesh.position.x, car.mesh.position.z);
@@ -214,7 +225,8 @@ export class CarManager {
         }
       }
 
-      if (car.state === 'driving' && dist > ROAD_TOLERANCE * 2) {
+      if (car.state === 'driving' && dist > ROAD_TOLERANCE * 2 && rerouted < 5) {
+        rerouted++;
         if (car.destinationBuildingId !== null) {
           this.assignRouteToBuilding(car, car.destinationBuildingId, nearest);
           if (car.waypoints.length < 2) {
@@ -234,6 +246,7 @@ export class CarManager {
       this.toRemove.clear();
     }
 
+    this.spawnFailedHouseholds.clear();
     this.spawnCars();
   }
 
@@ -243,7 +256,7 @@ export class CarManager {
     // If no population system, use legacy spawn
     if (!this.population || !this.population.isInitialized()) {
       let attempts = 0;
-      while (this.cars.length < MAX_CARS && attempts < 50) {
+      while (this.cars.length < MAX_CARS && attempts < 3) {
         attempts++;
         const car = this.createLegacyCar();
         if (car) this.cars.push(car);
@@ -252,19 +265,22 @@ export class CarManager {
     }
 
     // Needs-driven spawning: check households without active cars
-    let spawned = 0;
+    let attempts = 0;
     for (const household of this.population.households.values()) {
       if (this.cars.length >= MAX_CARS) break;
+      if (attempts >= 2) break;
       if (household.carActive) continue;
-      if (spawned > 10) break; // limit per frame
+      if (this.spawnFailedHouseholds.has(household.id)) continue;
 
       const lowestNeed = this.population.getHouseholdLowestNeed(household.id);
       if (lowestNeed >= NEED_THRESHOLD) continue;
 
+      attempts++;
       const car = this.createHouseholdCar(household.id);
       if (car) {
         this.cars.push(car);
-        spawned++;
+      } else {
+        this.spawnFailedHouseholds.add(household.id);
       }
     }
   }
@@ -427,7 +443,7 @@ export class CarManager {
     const start = fromNode ?? this.findNearestNode(car.mesh.position.x, car.mesh.position.z);
     if (start === null) return;
 
-    for (let attempt = 0; attempt < 10; attempt++) {
+    for (let attempt = 0; attempt < 3; attempt++) {
       const dest = this.graph.getRandomBuildingDestination();
       const end = dest ? dest.nodeId : this.graph.getRandomCarNode();
       if (end === null || end === start) continue;
@@ -1161,8 +1177,17 @@ export class CarManager {
       this.cars = this.cars.filter(c => !toRemove.has(c.id));
     }
 
-    // Spawn new cars periodically
-    this.spawnCars();
+    // Spawn new cars periodically (every 2s instead of every frame)
+    this.spawnTimer += deltaTime;
+    if (this.spawnTimer >= 0.25) {
+      this.spawnTimer = 0;
+      this.spawnCars();
+    }
+    this.spawnFailedClearTimer += deltaTime;
+    if (this.spawnFailedClearTimer >= 10) {
+      this.spawnFailedClearTimer = 0;
+      this.spawnFailedHouseholds.clear();
+    }
 
     // Throttled state emission (~4 times/sec)
     this.stateThrottleTimer += deltaTime;

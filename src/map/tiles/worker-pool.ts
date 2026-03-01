@@ -18,8 +18,13 @@ export interface GeometryJobResult {
   decodedRoads: RoadData[];
 }
 
+export interface DecodeOnlyJobResult {
+  decodedBuildings: BuildingData[];
+  decodedRoads: RoadData[];
+}
+
 interface PendingJob {
-  resolve: (result: GeometryJobResult) => void;
+  resolve: (result: any) => void;
   reject: (err: Error) => void;
 }
 
@@ -50,6 +55,17 @@ export class WorkerPool {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       worker.postMessage({ id, ...input }, [input.buffer]);
+    });
+  }
+
+  postDecodeJob(input: { buffer: ArrayBuffer; tileCoord: { z: number; x: number; y: number } }): Promise<DecodeOnlyJobResult> {
+    const id = this.nextId++;
+    const worker = this.workers[this.nextWorker % this.workers.length];
+    this.nextWorker++;
+
+    return new Promise((resolve, reject) => {
+      this.pending.set(id, { resolve, reject });
+      worker.postMessage({ id, buffer: input.buffer, tileCoord: input.tileCoord, decodeOnly: true }, [input.buffer]);
     });
   }
 

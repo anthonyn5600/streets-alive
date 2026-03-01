@@ -9,9 +9,14 @@ export class RuntimeTestRunner {
   private elapsed = 0;
   private lastResults: RuntimeTestResult[] = [];
   private onResults: ((results: RuntimeTestResult[]) => void) | null = null;
+  private enabled = false;
 
   setOnResults(cb: (results: RuntimeTestResult[]) => void) {
     this.onResults = cb;
+  }
+
+  setEnabled(enabled: boolean) {
+    this.enabled = enabled;
   }
 
   getLastResults(): RuntimeTestResult[] {
@@ -19,6 +24,8 @@ export class RuntimeTestRunner {
   }
 
   update(dt: number, carManager: CarManager, population: PopulationManager) {
+    if (!this.enabled) return;
+
     this.elapsed += dt;
     if (this.elapsed < RUN_INTERVAL) return;
     this.elapsed = 0;
@@ -53,7 +60,7 @@ export class RuntimeTestRunner {
       fetch('/__test-results', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(results, null, 2),
+        body: JSON.stringify(results),
       }).catch(() => {});
     } catch {
       // Fire-and-forget

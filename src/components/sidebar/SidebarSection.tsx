@@ -22,7 +22,7 @@ export function SidebarSection({ icon, title, count, defaultOpen = true, childre
         )}
         <ChevronDown className="size-4 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180" />
       </CollapsibleTrigger>
-      <CollapsibleContent className="overflow-hidden data-[state=open]:animate-[collapsible-down_200ms_ease-out] data-[state=closed]:animate-[collapsible-up_200ms_ease-out]">
+      <CollapsibleContent className="overflow-hidden">
         <div className="px-3 pb-3">
           {children}
         </div>

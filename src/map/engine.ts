@@ -7,10 +7,10 @@ import { TripPlanner } from './simulation/trip-planner';
 import { ProgressBarManager } from './simulation/progress-bar';
 import { RuntimeTestRunner } from './simulation/runtime-test-runner';
 import { setCenter, project, unproject } from './projection';
-import { openTileCache, evictOldTiles } from './tiles/vector-tiles';
-import { geometryCache, openGeometryCache, evictOldGeometry } from './tiles/geometry-cache';
+import { openTileCache, evictOldTiles, evictExcessTiles } from './tiles/vector-tiles';
+import { geometryCache, openGeometryCache, evictOldGeometry, evictExcessGeometry } from './tiles/geometry-cache';
 import { materialPool } from './materials';
-import type { SimCarInfo, HouseholdInfo, MapState, LatLng, RuntimeTestResult } from './types';
+import type { SimCarInfo, HouseholdInfo, MapState, LatLng, RuntimeTestResult, BBox, RoadData, TileKey } from './types';
 import type { BuildingRole } from './simulation/population';
 
 const _clickNdc = new THREE.Vector2();
@@ -31,7 +31,7 @@ function createScene(): THREE.Scene {
   const hemi = new THREE.HemisphereLight(0xb1e1ff, 0xb97a20, 0.3);
   scene.add(hemi);
 
-  const groundGeom = new THREE.PlaneGeometry(20000, 20000);
+  const groundGeom = new THREE.PlaneGeometry(30000, 30000);
   const groundMat = new THREE.MeshLambertMaterial({
     color: 0xe8e6e0,
     polygonOffset: true,
@@ -70,6 +70,11 @@ export class MapEngine {
   private raycaster = new THREE.Raycaster();
   private buildingColorsApplied = false;
   private graphRebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  private evictionIntervalId: ReturnType<typeof setInterval> | null = null;
+  private persistentRoadData = new Map<TileKey, RoadData[]>();
+  private persistentRoadVersion = 0;
+  private stateDirty = false;
+  private stateRafId: number | null = null;
 
   init(canvas: HTMLCanvasElement, onStateChange: (state: MapState) => void) {
     this.canvas = canvas;
@@ -98,7 +103,7 @@ export class MapEngine {
     this.tileManager = new TileManager(this.scene);
     this.tileManager.setCamera(this.cameraController.camera);
     this.tileManager.setOnStateChange(() => {
-      this.emitState();
+      this.markStateDirty();
       if (this.graphRebuildTimer !== null) clearTimeout(this.graphRebuildTimer);
       this.graphRebuildTimer = setTimeout(() => {
         this.graphRebuildTimer = null;
@@ -135,8 +140,17 @@ export class MapEngine {
     setCenter(34.0522, -118.2437);
 
     // Initialize persistent caches (fire-and-forget)
-    openTileCache().then(() => evictOldTiles()).catch(() => {});
-    openGeometryCache().then(() => evictOldGeometry()).catch(() => {});
+    openTileCache().then(() => Promise.all([evictOldTiles(), evictExcessTiles()])).catch(() => {});
+    openGeometryCache().then(() => Promise.all([evictOldGeometry(), evictExcessGeometry()])).catch(() => {});
+
+    // Periodic eviction every 30 minutes
+    const EVICTION_INTERVAL_MS = 30 * 60 * 1000;
+    this.evictionIntervalId = setInterval(() => {
+      evictOldTiles().catch(() => {});
+      evictExcessTiles().catch(() => {});
+      evictOldGeometry().catch(() => {});
+      evictExcessGeometry().catch(() => {});
+    }, EVICTION_INTERVAL_MS);
 
     // Initial tile load
     this.cameraController.onViewChange(() => this.loadVisibleTiles());
@@ -245,19 +259,67 @@ export class MapEngine {
     if (this.disposed) return;
     const bbox = this.cameraController.getVisibleBBox();
     const zoom = this.cameraController.getZoomLevel();
-    this.tileManager.updateVisibleTiles(bbox, zoom);
-    this.emitState();
+    const LOAD_RADIUS_DEG = 0.03;
+    const expandedBBox: BBox = {
+      south: bbox.south - LOAD_RADIUS_DEG,
+      north: bbox.north + LOAD_RADIUS_DEG,
+      west: bbox.west - LOAD_RADIUS_DEG,
+      east: bbox.east + LOAD_RADIUS_DEG,
+    };
+    this.tileManager.updateVisibleTiles(expandedBBox, zoom);
+    this.markStateDirty();
   }
 
-  private updateCarGraph() {
-    const roads = this.tileManager.getAllRoadData();
+  private async updateCarGraph() {
+    // Merge loaded tile roads into persistent store
+    for (const [key, tile] of this.tileManager.getTileEntries()) {
+      if (tile.roadData && !this.persistentRoadData.has(key)) {
+        this.persistentRoadData.set(key, tile.roadData);
+        this.persistentRoadVersion++;
+      }
+    }
+
+    // Prune tiles beyond ~20km from camera center
+    this.prunePersistentRoads();
+
+    // Roads from persistent store, buildings from loaded tiles only
+    const roads: RoadData[] = [];
+    for (const tileRoads of this.persistentRoadData.values()) {
+      roads.push(...tileRoads);
+    }
     const buildings = this.tileManager.getAllBuildingData();
-    const version = this.tileManager.getRoadDataVersion();
-    this.carManager.rebuildGraph(roads, version, buildings);
+    await this.carManager.rebuildGraph(roads, this.persistentRoadVersion, buildings);
 
     if (!this.buildingColorsApplied && this.populationManager.isInitialized()) {
       this.buildingColorsApplied = true;
       this.applyBuildingColors();
+    }
+  }
+
+  private prunePersistentRoads() {
+    const PERSIST_RADIUS_DEG = 0.18;
+    const center = this.cameraController.controls.target;
+    const cameraLatLng = unproject({ x: center.x, z: center.z });
+
+    for (const key of this.persistentRoadData.keys()) {
+      // Parse tile key "z/x/y" to get tile center lat/lng
+      const parts = key.split('/');
+      if (parts.length !== 3) continue;
+      const z = parseInt(parts[0], 10);
+      const tx = parseInt(parts[1], 10);
+      const ty = parseInt(parts[2], 10);
+      const n = Math.pow(2, z);
+      const tileCenterLng = ((tx + 0.5) / n) * 360 - 180;
+      const tileCenterLat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * (ty + 0.5)) / n))) * 180) / Math.PI;
+
+      const dist = Math.sqrt(
+        Math.pow(tileCenterLat - cameraLatLng.lat, 2) +
+        Math.pow(tileCenterLng - cameraLatLng.lng, 2)
+      );
+
+      if (dist > PERSIST_RADIUS_DEG) {
+        this.persistentRoadData.delete(key);
+      }
     }
   }
 
@@ -298,8 +360,19 @@ export class MapEngine {
     this.renderer.render(this.scene, this.cameraController.camera);
   };
 
-  private emitState() {
-    if (!this.onStateChange) return;
+  private markStateDirty() {
+    this.stateDirty = true;
+    if (this.stateRafId === null) {
+      this.stateRafId = requestAnimationFrame(() => {
+        this.stateRafId = null;
+        this.flushState();
+      });
+    }
+  }
+
+  private flushState() {
+    if (!this.stateDirty || !this.onStateChange) return;
+    this.stateDirty = false;
 
     const center = this.cameraController.controls.target;
     const cameraLatLng = unproject({ x: center.x, z: center.z });
@@ -326,15 +399,19 @@ export class MapEngine {
     this.tileManager.setHeightMultiplier(mult);
   }
 
+  setTestRunnerEnabled(enabled: boolean) {
+    this.testRunner.setEnabled(enabled);
+  }
+
   async flyTo(lat: number, lng: number) {
     const pt = project({ lat, lng });
     await this.cameraController.flyTo(pt.x, pt.z);
-    this.loadVisibleTiles();
+    setTimeout(() => this.loadVisibleTiles(), 0);
   }
 
   async flyToScenePos(x: number, z: number) {
     await this.cameraController.flyTo(x, z);
-    this.loadVisibleTiles();
+    setTimeout(() => this.loadVisibleTiles(), 0);
   }
 
   getPerformanceLog() {
@@ -350,9 +427,17 @@ export class MapEngine {
 
   dispose() {
     this.disposed = true;
+    if (this.evictionIntervalId !== null) {
+      clearInterval(this.evictionIntervalId);
+      this.evictionIntervalId = null;
+    }
     if (this.graphRebuildTimer !== null) {
       clearTimeout(this.graphRebuildTimer);
       this.graphRebuildTimer = null;
+    }
+    if (this.stateRafId !== null) {
+      cancelAnimationFrame(this.stateRafId);
+      this.stateRafId = null;
     }
     if (this.animationId !== null) {
       cancelAnimationFrame(this.animationId);
@@ -362,6 +447,7 @@ export class MapEngine {
     this.progressBarManager.dispose();
     this.carManager.dispose();
     this.tileManager.dispose();
+    this.persistentRoadData.clear();
     geometryCache.clear();
     materialPool.dispose();
     this.cameraController.dispose();

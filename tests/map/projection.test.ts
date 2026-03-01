@@ -40,3 +40,34 @@ describe('project / unproject', () => {
     expect(pt.x).toBeLessThan(0);
   });
 });
+
+describe('setCenter', () => {
+  it('changes the projection origin', () => {
+    // Project a point with default center
+    const ptDefault = project({ lat: 34.06, lng: -118.25 });
+
+    // Change center to a different location
+    setCenter(40.7128, -74.0060); // NYC
+    const ptNyc = project({ lat: 34.06, lng: -118.25 });
+
+    // Same lat/lng should project to very different coords with different center
+    expect(Math.abs(ptDefault.x - ptNyc.x)).toBeGreaterThan(1000);
+  });
+});
+
+describe('edge cases', () => {
+  it('distant point projects to large coordinates', () => {
+    // ~1 degree away from center (~111km)
+    const pt = project({ lat: 35.0522, lng: -118.2437 });
+    expect(Math.abs(pt.z)).toBeGreaterThan(100000); // >100km in meters
+  });
+
+  it('round-trip precision at moderate distances', () => {
+    // ~500m from center
+    const original = { lat: 34.0567, lng: -118.2390 };
+    const projected = project(original);
+    const back = unproject(projected);
+    expect(back.lat).toBeCloseTo(original.lat, 5);
+    expect(back.lng).toBeCloseTo(original.lng, 5);
+  });
+});

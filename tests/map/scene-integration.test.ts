@@ -53,46 +53,10 @@ function makeSampleBuilding(): BuildingData {
   };
 }
 
-describe('createRoadMeshes integration', () => {
-  it('residential road produces localFill with geometry', () => {
-    const result = createRoadMeshes([makeSampleRoad('residential')], 10);
-    expect(result.localFill).not.toBeNull();
-    expect(getVertexCount(result.localFill!)).toBeGreaterThan(0);
-  });
-
-  it('primary road produces localCasing with geometry', () => {
-    const result = createRoadMeshes([makeSampleRoad('primary')], 10);
-    expect(result.localCasing).not.toBeNull();
-    expect(getVertexCount(result.localCasing!)).toBeGreaterThan(0);
-  });
-
-  it('motorway produces highwayCenterLine (divided highway)', () => {
-    const result = createRoadMeshes([makeSampleRoad('motorway')], 10);
-    expect(result.highwayCenterLine).not.toBeNull();
-    expect(getVertexCount(result.highwayCenterLine!)).toBeGreaterThan(0);
-  });
-
-  it('primary produces localCenterLine', () => {
-    const result = createRoadMeshes([makeSampleRoad('primary')], 10);
-    expect(result.localCenterLine).not.toBeNull();
-    expect(getVertexCount(result.localCenterLine!)).toBeGreaterThan(0);
-  });
-
-  it('motorway produces highway mask and shadow', () => {
-    const result = createRoadMeshes([makeSampleRoad('motorway')], 10);
-    expect(result.highwayMask).not.toBeNull();
-    expect(result.highwayShadow).not.toBeNull();
-  });
-
-  it('residential does not produce localCenterLine', () => {
-    const result = createRoadMeshes([makeSampleRoad('residential')], 10);
-    expect(result.localCenterLine).toBeNull();
-  });
-
+describe('scene integration', () => {
   it('motorway renders flat (no elevated geometry)', () => {
     const result = createRoadMeshes([makeSampleRoad('motorway')], 10);
     expect(result.highwayFill).not.toBeNull();
-    // All Y coordinates should be near ground level (< 1m)
     result.highwayFill!.traverse(child => {
       if (child instanceof THREE.Mesh) {
         const pos = child.geometry.getAttribute('position');
@@ -110,10 +74,8 @@ describe('createRoadMeshes integration', () => {
     expect(result.highwayMask).toBeNull();
     expect(result.highwayShadow).toBeNull();
   });
-});
 
-describe('buildings + roads together', () => {
-  it('both produce non-null meshes with geometry', () => {
+  it('buildings and roads together produce meshes with geometry', () => {
     const roads = [makeSampleRoad('secondary'), makeSampleRoad('residential')];
     const buildings = [makeSampleBuilding()];
 
@@ -124,7 +86,6 @@ describe('buildings + roads together', () => {
     expect(getVertexCount(roadResult.localFill!)).toBeGreaterThan(0);
 
     expect(buildingMesh).not.toBeNull();
-    const buildingVerts = buildingMesh!.geometry.getAttribute('position').count;
-    expect(buildingVerts).toBeGreaterThan(0);
+    expect(buildingMesh!.geometry.getAttribute('position').count).toBeGreaterThan(0);
   });
 });

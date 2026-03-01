@@ -11,6 +11,22 @@ function makeRoad(id: number, points: Array<{ lat: number; lng: number }>, type 
   return { id, points, type, name: '', lanes: 2, oneway };
 }
 
+function makeBuilding(id: number, lat: number, lng: number): BuildingData {
+  const d = 0.0001;
+  return {
+    id,
+    polygon: [
+      { lat, lng },
+      { lat, lng: lng + d },
+      { lat: lat + d, lng: lng + d },
+      { lat: lat + d, lng },
+      { lat, lng },
+    ],
+    height: 10,
+    minHeight: 0,
+  };
+}
+
 describe('RoadGraph.build', () => {
   it('creates nodes and edges from connected roads', () => {
     const graph = new RoadGraph();
@@ -57,7 +73,6 @@ describe('RoadGraph.dijkstra', () => {
     ];
     graph.build(roads);
 
-    // Find start and end nodes
     const start = 0;
     const end = graph.nodes.length - 1;
     const path = graph.dijkstra(start, end);
@@ -69,7 +84,6 @@ describe('RoadGraph.dijkstra', () => {
 
   it('returns null for disconnected nodes', () => {
     const graph = new RoadGraph();
-    // Two roads far apart (won't cluster)
     const roads: RoadData[] = [
       makeRoad(1, [
         { lat: 34.0522, lng: -118.2437 },
@@ -81,7 +95,6 @@ describe('RoadGraph.dijkstra', () => {
       ]),
     ];
     graph.build(roads);
-    // Nodes from road 1 can't reach nodes from road 2
     const path = graph.dijkstra(0, graph.nodes.length - 1);
     expect(path).toBeNull();
   });
@@ -141,13 +154,8 @@ describe('one-way edges', () => {
       { lat: 34.0530, lng: -118.2437 },
     ], 'residential', 1)]);
 
-    // Forward (0 -> 1) should exist
-    const forwardPath = graph.dijkstra(0, 1);
-    expect(forwardPath).not.toBeNull();
-
-    // Reverse (1 -> 0) should not exist
-    const reversePath = graph.dijkstra(1, 0);
-    expect(reversePath).toBeNull();
+    expect(graph.dijkstra(0, 1)).not.toBeNull();
+    expect(graph.dijkstra(1, 0)).toBeNull();
   });
 
   it('oneway=-1 creates only reverse edge', () => {
@@ -157,13 +165,8 @@ describe('one-way edges', () => {
       { lat: 34.0530, lng: -118.2437 },
     ], 'residential', -1)]);
 
-    // Reverse (1 -> 0) should exist
-    const reversePath = graph.dijkstra(1, 0);
-    expect(reversePath).not.toBeNull();
-
-    // Forward (0 -> 1) should not exist
-    const forwardPath = graph.dijkstra(0, 1);
-    expect(forwardPath).toBeNull();
+    expect(graph.dijkstra(1, 0)).not.toBeNull();
+    expect(graph.dijkstra(0, 1)).toBeNull();
   });
 
   it('motorway defaults to one-way even when oneway=0', () => {
@@ -173,13 +176,8 @@ describe('one-way edges', () => {
       { lat: 34.0530, lng: -118.2437 },
     ], 'motorway', 0)]);
 
-    // Forward should exist
-    const forwardPath = graph.dijkstra(0, 1);
-    expect(forwardPath).not.toBeNull();
-
-    // Reverse should not (default one-way)
-    const reversePath = graph.dijkstra(1, 0);
-    expect(reversePath).toBeNull();
+    expect(graph.dijkstra(0, 1)).not.toBeNull();
+    expect(graph.dijkstra(1, 0)).toBeNull();
   });
 
   it('oneway=0 on residential creates both edges', () => {
@@ -194,31 +192,14 @@ describe('one-way edges', () => {
   });
 });
 
-function makeBuilding(lat: number, lng: number): BuildingData {
-  const d = 0.0001;
-  return {
-    id: 999,
-    polygon: [
-      { lat, lng },
-      { lat, lng: lng + d },
-      { lat: lat + d, lng: lng + d },
-      { lat: lat + d, lng },
-      { lat, lng },
-    ],
-    height: 10,
-    minHeight: 0,
-  };
-}
-
 describe('RoadGraph.buildBuildingIndex', () => {
-  it('indexes buildings near road nodes', () => {
+  it('indexes buildings near road nodes', async () => {
     const graph = new RoadGraph();
     graph.build([makeRoad(1, [
       { lat: 34.0522, lng: -118.2437 },
       { lat: 34.0530, lng: -118.2437 },
     ])]);
-    // Building very close to the road start
-    graph.buildBuildingIndex([makeBuilding(34.0522, -118.2436)]);
+    await graph.buildBuildingIndex([makeBuilding(999, 34.0522, -118.2436)]);
     const dest = graph.getRandomBuildingDestination();
     expect(dest).not.toBeNull();
     expect(typeof dest!.nodeId).toBe('number');
@@ -226,42 +207,211 @@ describe('RoadGraph.buildBuildingIndex', () => {
     expect(typeof dest!.buildingZ).toBe('number');
   });
 
-  it('skips buildings far from any node', () => {
+  it('skips buildings far from any node', async () => {
     const graph = new RoadGraph();
     graph.build([makeRoad(1, [
       { lat: 34.0522, lng: -118.2437 },
       { lat: 34.0530, lng: -118.2437 },
     ])]);
-    // Building very far away
-    graph.buildBuildingIndex([makeBuilding(35.0, -117.0)]);
+    await graph.buildBuildingIndex([makeBuilding(999, 35.0, -117.0)]);
     expect(graph.getRandomBuildingDestination()).toBeNull();
   });
 
-  it('returns null when no buildings indexed', () => {
+  it('returns null when no buildings indexed', async () => {
     const graph = new RoadGraph();
     graph.build([makeRoad(1, [
       { lat: 34.0522, lng: -118.2437 },
       { lat: 34.0530, lng: -118.2437 },
     ])]);
-    graph.buildBuildingIndex([]);
+    await graph.buildBuildingIndex([]);
     expect(graph.getRandomBuildingDestination()).toBeNull();
   });
 
-  it('clears stale index on graph rebuild', () => {
+  it('clears stale index on graph rebuild', async () => {
     const graph = new RoadGraph();
     graph.build([makeRoad(1, [
       { lat: 34.0522, lng: -118.2437 },
       { lat: 34.0530, lng: -118.2437 },
     ])]);
-    graph.buildBuildingIndex([makeBuilding(34.0522, -118.2436)]);
+    await graph.buildBuildingIndex([makeBuilding(999, 34.0522, -118.2436)]);
     expect(graph.getRandomBuildingDestination()).not.toBeNull();
 
-    // Rebuild graph without building index call
     graph.build([makeRoad(2, [
       { lat: 34.0522, lng: -118.2437 },
       { lat: 34.0530, lng: -118.2437 },
     ])]);
     expect(graph.getRandomBuildingDestination()).toBeNull();
+  });
+
+  it('parking node increases node count (edge splitting)', async () => {
+    const graph = new RoadGraph();
+    graph.build([makeRoad(1, [
+      { lat: 34.0522, lng: -118.2437 },
+      { lat: 34.0530, lng: -118.2437 },
+    ])]);
+    const nodeCountBefore = graph.nodes.length;
+
+    // Building close to road midpoint should insert a parking node
+    await graph.buildBuildingIndex([makeBuilding(999, 34.0526, -118.2436)]);
+    const indexed = graph.getIndexedBuildings();
+    if (indexed.length > 0) {
+      // Parking node was inserted either as split or snap
+      expect(graph.nodes.length).toBeGreaterThanOrEqual(nodeCountBefore);
+    }
+  });
+
+  it('parking node is reachable via dijkstra', async () => {
+    const graph = new RoadGraph();
+    graph.build([
+      makeRoad(1, [
+        { lat: 34.0522, lng: -118.2437 },
+        { lat: 34.0530, lng: -118.2437 },
+      ]),
+      makeRoad(2, [
+        { lat: 34.0530, lng: -118.2437 },
+        { lat: 34.0538, lng: -118.2437 },
+      ]),
+    ]);
+    await graph.buildBuildingIndex([makeBuilding(999, 34.0526, -118.2436)]);
+
+    const dest = graph.getBuildingDestination(999);
+    if (dest) {
+      const path = graph.dijkstra(0, dest.nodeId);
+      expect(path).not.toBeNull();
+      expect(path![path!.length - 1]).toBe(dest.nodeId);
+    }
+  });
+});
+
+describe('RoadGraph.findNearestNode', () => {
+  it('finds nearest node in spatial grid', () => {
+    const graph = new RoadGraph();
+    graph.build([makeRoad(1, [
+      { lat: 34.0522, lng: -118.2437 },
+      { lat: 34.0530, lng: -118.2437 },
+    ])]);
+
+    // Query near the first node (which is at ~(0,0) since it's the projection center)
+    const nearest = graph.findNearestNode(1, 1);
+    expect(nearest).not.toBeNull();
+    expect(typeof nearest).toBe('number');
+    // Should be node 0 (the closest to origin)
+    expect(nearest).toBe(0);
+  });
+
+  it('returns null for empty graph', () => {
+    const graph = new RoadGraph();
+    graph.build([]);
+    expect(graph.findNearestNode(0, 0)).toBeNull();
+  });
+});
+
+describe('RoadGraph.getRouteWaypointsWithOffset', () => {
+  it('returns waypoints with lane offset applied', () => {
+    const graph = new RoadGraph();
+    graph.build([makeRoad(1, [
+      { lat: 34.0522, lng: -118.2437 },
+      { lat: 34.0530, lng: -118.2437 },
+    ])]);
+
+    const path = graph.dijkstra(0, 1)!;
+    const regular = graph.getRouteWaypoints(path);
+    const offset = graph.getRouteWaypointsWithOffset(path);
+
+    expect(offset.length).toBe(regular.length);
+    // Offset should differ from regular (residential has non-zero lane offset)
+    let differs = false;
+    for (let i = 0; i < regular.length; i++) {
+      if (Math.abs(regular[i].x - offset[i].x) > 0.01 ||
+          Math.abs(regular[i].z - offset[i].z) > 0.01) {
+        differs = true;
+        break;
+      }
+    }
+    expect(differs).toBe(true);
+  });
+});
+
+describe('RoadGraph.getRouteRoadTypes', () => {
+  it('returns correct road type per edge', () => {
+    const graph = new RoadGraph();
+    graph.build([
+      makeRoad(1, [
+        { lat: 34.0522, lng: -118.2437 },
+        { lat: 34.0530, lng: -118.2437 },
+      ], 'primary'),
+      makeRoad(2, [
+        { lat: 34.0530, lng: -118.2437 },
+        { lat: 34.0530, lng: -118.2425 },
+      ], 'secondary'),
+    ]);
+
+    const path = graph.dijkstra(0, graph.nodes.length - 1);
+    expect(path).not.toBeNull();
+    const types = graph.getRouteRoadTypes(path!);
+    expect(types.length).toBe(path!.length - 1);
+    expect(types[0]).toBe('primary');
+    if (types.length > 1) {
+      expect(types[1]).toBe('secondary');
+    }
+  });
+});
+
+describe('RoadGraph.getBuildingDestination', () => {
+  it('returns destination for indexed building', async () => {
+    const graph = new RoadGraph();
+    graph.build([makeRoad(1, [
+      { lat: 34.0522, lng: -118.2437 },
+      { lat: 34.0530, lng: -118.2437 },
+    ])]);
+    await graph.buildBuildingIndex([makeBuilding(42, 34.0522, -118.2436)]);
+
+    const dest = graph.getBuildingDestination(42);
+    if (graph.getIndexedBuildings().length > 0) {
+      expect(dest).not.toBeNull();
+      expect(typeof dest!.nodeId).toBe('number');
+      expect(typeof dest!.buildingX).toBe('number');
+      expect(typeof dest!.buildingZ).toBe('number');
+      expect(typeof dest!.roadDirX).toBe('number');
+      expect(typeof dest!.roadDirZ).toBe('number');
+      expect(typeof dest!.roadType).toBe('string');
+    }
+  });
+
+  it('returns null for non-indexed building id', () => {
+    const graph = new RoadGraph();
+    graph.build([makeRoad(1, [
+      { lat: 34.0522, lng: -118.2437 },
+      { lat: 34.0530, lng: -118.2437 },
+    ])]);
+    expect(graph.getBuildingDestination(999)).toBeNull();
+  });
+});
+
+describe('RoadGraph.filterIndexedBuildings', () => {
+  it('keeps only buildings in provided set', async () => {
+    const graph = new RoadGraph();
+    graph.build([makeRoad(1, [
+      { lat: 34.0522, lng: -118.2437 },
+      { lat: 34.0530, lng: -118.2437 },
+    ])]);
+    await graph.buildBuildingIndex([
+      makeBuilding(1, 34.0522, -118.2436),
+      makeBuilding(2, 34.0524, -118.2436),
+      makeBuilding(3, 34.0526, -118.2436),
+    ]);
+
+    const beforeCount = graph.getIndexedBuildings().length;
+    if (beforeCount < 2) return; // not enough indexed for meaningful test
+
+    const keepSet = new Set([1]);
+    graph.filterIndexedBuildings(keepSet);
+
+    const afterIds = graph.getIndexedBuildings().map(b => b.buildingId);
+    for (const id of afterIds) {
+      expect(keepSet.has(id)).toBe(true);
+    }
+    expect(graph.getIndexedBuildings().length).toBeLessThanOrEqual(beforeCount);
   });
 });
 

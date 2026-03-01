@@ -56,6 +56,10 @@ export function getCachedPbf(key: string): Promise<ArrayBuffer | null> {
           return;
         }
         if (Date.now() - entry.timestamp > DEFAULT_TTL_MS) {
+          try {
+            const delTx = db!.transaction(STORE_NAME, 'readwrite');
+            delTx.objectStore(STORE_NAME).delete(key);
+          } catch { /* ignore */ }
           resolve(null);
           return;
         }
@@ -110,6 +114,50 @@ export function evictOldTiles(maxAgeMs: number = DEFAULT_TTL_MS): Promise<void> 
 
       request.onerror = () => resolve();
       tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+export function evictExcessTiles(maxEntries: number = 800): Promise<void> {
+  if (!db) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    try {
+      const tx = db!.transaction(STORE_NAME, 'readwrite');
+      const store = tx.objectStore(STORE_NAME);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+
+      const countReq = store.count();
+
+      countReq.onsuccess = () => {
+        if (countReq.result <= maxEntries) {
+          return;
+        }
+
+        const entries: { key: string; timestamp: number }[] = [];
+        const cursorReq = store.openCursor();
+
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (cursor) {
+            const val = cursor.value as { key: string; timestamp: number };
+            entries.push({ key: val.key, timestamp: val.timestamp });
+            cursor.continue();
+          } else {
+            entries.sort((a, b) => a.timestamp - b.timestamp);
+            const toDelete = entries.slice(0, entries.length - maxEntries);
+            for (const entry of toDelete) {
+              store.delete(entry.key);
+            }
+          }
+        };
+        cursorReq.onerror = () => resolve();
+      };
+
+      countReq.onerror = () => resolve();
     } catch {
       resolve();
     }
@@ -201,7 +249,7 @@ async function ensureTileUrl(): Promise<string> {
 
 // --- LRU cache (decoded tile data) ---
 
-const CACHE_MAX = 200;
+const CACHE_MAX = 256;
 const cache = new Map<string, { buildings: BuildingData[]; roads: RoadData[] }>();
 
 function cacheGet(key: string) {
@@ -223,6 +271,28 @@ function cacheSet(key: string, val: { buildings: BuildingData[]; roads: RoadData
 
 export function cacheSetDecoded(key: string, val: { buildings: BuildingData[]; roads: RoadData[] }) {
   cacheSet(key, val);
+}
+
+// --- Fetch concurrency semaphore ---
+
+const MAX_CONCURRENT_FETCHES = 6;
+let activeFetchCount = 0;
+const fetchQueue: Array<{ resolve: () => void }> = [];
+
+function acquireFetchSlot(): Promise<void> {
+  if (activeFetchCount < MAX_CONCURRENT_FETCHES) {
+    activeFetchCount++;
+    return Promise.resolve();
+  }
+  return new Promise(resolve => fetchQueue.push({ resolve }));
+}
+
+function releaseFetchSlot() {
+  if (fetchQueue.length > 0) {
+    fetchQueue.shift()!.resolve();
+  } else {
+    activeFetchCount--;
+  }
 }
 
 // --- Raw buffer fetch (IDB + network, no decode) ---
@@ -269,20 +339,25 @@ async function fetchTileBufferInner(
     return idbBuffer;
   }
 
-  const urlTemplate = await ensureTileUrl();
-  const url = urlTemplate
-    .replace('{z}', String(tile.z))
-    .replace('{x}', String(tile.x))
-    .replace('{y}', String(tile.y));
+  await acquireFetchSlot();
+  try {
+    const urlTemplate = await ensureTileUrl();
+    const url = urlTemplate
+      .replace('{z}', String(tile.z))
+      .replace('{x}', String(tile.x))
+      .replace('{y}', String(tile.y));
 
-  const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
-  if (!resp.ok) {
-    throw new Error(`Tile fetch failed: ${resp.status} for ${key}`);
+    const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!resp.ok) {
+      throw new Error(`Tile fetch failed: ${resp.status} for ${key}`);
+    }
+
+    const buffer = await resp.arrayBuffer();
+    putCachedPbf(key, buffer).catch(() => {});
+    return buffer;
+  } finally {
+    releaseFetchSlot();
   }
-
-  const buffer = await resp.arrayBuffer();
-  putCachedPbf(key, buffer).catch(() => {});
-  return buffer;
 }
 
 // --- Public API (decoded data, used by prefetch) ---

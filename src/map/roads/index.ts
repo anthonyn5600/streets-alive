@@ -1,9 +1,9 @@
 export {
   createRoadMeshes,
-  computeMiterNormals,
   buildRibbon,
   disposeObject,
 } from './renderer';
+export { computeMiterNormals } from './miter';
 export type { RoadMeshResult } from './renderer';
 
 export {

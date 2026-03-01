@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import type { BBox, BuildingData, RoadData, TileKey, TileState } from '../types';
 import { fetchTileData, fetchTileBuffer, cacheSetDecoded, bboxToTiles, tileKey, tileBBox, type TileCoord } from './vector-tiles';
-import { decodeTile } from './decode';
 import { createRoadMeshesFromArrays, disposeObject } from '../roads/renderer';
 import { createBuildingMeshFromArrays } from '../buildings';
 import { createRoadLabelsFromPlacements } from '../roads/labels';
@@ -23,9 +22,13 @@ interface TileTiming {
 
 const MAX_TILES = 128;
 const MAX_TIMINGS = 256;
-const UNLOAD_DISTANCE_MULTIPLIER = 8;
+const UNLOAD_DISTANCE_MULTIPLIER = 2;
 const PREFETCH_MAX_CONCURRENT = 4;
 const MAX_CONCURRENT_TILE_BUILDS = 8;
+const MAX_RETRIES = 5;
+const INITIAL_BACKOFF_MS = 1000;
+const MAX_BACKOFF_MS = 60000;
+const MAX_BUILD_QUEUE_SIZE = 64;
 
 const BUILDING_DEFAULT_COLOR = new THREE.Color(0xd4d0c8);
 
@@ -52,6 +55,7 @@ export class TileManager {
   private tileTimings: TileTiming[] = [];
   private workerPool: WorkerPool;
   private meshCreationQueue: Array<{ key: TileKey; cached: CachedTileGeometry; tFetch: number; t0: number; cacheHit: boolean; tGeometry: number }> = [];
+  private failedTiles = new Map<TileKey, { retries: number; nextRetryTime: number }>();
 
   // Layer visibility
   showBuildings = true;
@@ -124,6 +128,8 @@ export class TileManager {
     this.lastVisibleBBox = bbox;
     this.lastZoomLevel = zoomLevel;
 
+    this.pruneInvisibleFromQueue(bbox);
+
     const allTiles = bboxToTiles(bbox);
 
     if (allTiles.length > MAX_TILES * 4) {
@@ -145,6 +151,12 @@ export class TileManager {
     for (const coord of toLoad) {
       const key = tileKey(coord);
       visibleKeys.add(key);
+
+      const failed = this.failedTiles.get(key);
+      if (failed) {
+        if (failed.retries >= MAX_RETRIES) continue;
+        if (Date.now() < failed.nextRetryTime) continue;
+      }
 
       const existing = this.tiles.get(key);
       if (!existing) {
@@ -177,6 +189,54 @@ export class TileManager {
         this.unloadTile(key);
       }
     }
+
+    this.sortQueueByDistance(bbox);
+  }
+
+  private pruneInvisibleFromQueue(bbox: BBox) {
+    if (this.buildQueue.length === 0) return;
+    const expandedBBox = {
+      south: bbox.south - (bbox.north - bbox.south) * 0.25,
+      north: bbox.north + (bbox.north - bbox.south) * 0.25,
+      west: bbox.west - (bbox.east - bbox.west) * 0.25,
+      east: bbox.east + (bbox.east - bbox.west) * 0.25,
+    };
+    const keep: typeof this.buildQueue = [];
+    for (const entry of this.buildQueue) {
+      const tileCenterLat = (entry.bbox.south + entry.bbox.north) / 2;
+      const tileCenterLng = (entry.bbox.west + entry.bbox.east) / 2;
+      if (
+        tileCenterLat >= expandedBBox.south && tileCenterLat <= expandedBBox.north &&
+        tileCenterLng >= expandedBBox.west && tileCenterLng <= expandedBBox.east
+      ) {
+        keep.push(entry);
+      } else {
+        this.buildQueueKeys.delete(entry.key);
+        const t = this.tiles.get(entry.key);
+        if (t) {
+          t.abortController.abort();
+          this.tiles.delete(entry.key);
+          this.loadingCount--;
+        }
+      }
+    }
+    this.buildQueue.length = 0;
+    this.buildQueue.push(...keep);
+  }
+
+  private sortQueueByDistance(bbox: BBox) {
+    if (this.buildQueue.length <= 1) return;
+    const centerLat = (bbox.south + bbox.north) / 2;
+    const centerLng = (bbox.west + bbox.east) / 2;
+    this.buildQueue.sort((a, b) => {
+      const aCenterLat = (a.bbox.south + a.bbox.north) / 2;
+      const aCenterLng = (a.bbox.west + a.bbox.east) / 2;
+      const bCenterLat = (b.bbox.south + b.bbox.north) / 2;
+      const bCenterLng = (b.bbox.west + b.bbox.east) / 2;
+      const da = Math.abs(aCenterLat - centerLat) + Math.abs(aCenterLng - centerLng);
+      const db = Math.abs(bCenterLat - centerLat) + Math.abs(bCenterLng - centerLng);
+      return da - db;
+    });
   }
 
   private loadTile(key: TileKey, bbox: BBox, zoomLevel: number, coord: TileCoord) {
@@ -202,6 +262,21 @@ export class TileManager {
     if (this.buildQueueKeys.has(key)) return;
     this.buildQueueKeys.add(key);
     this.buildQueue.push({ key, bbox, zoomLevel, coord });
+
+    if (this.buildQueue.length > MAX_BUILD_QUEUE_SIZE && this.lastVisibleBBox) {
+      this.sortQueueByDistance(this.lastVisibleBBox);
+      const removed = this.buildQueue.splice(MAX_BUILD_QUEUE_SIZE);
+      for (const entry of removed) {
+        this.buildQueueKeys.delete(entry.key);
+        const t = this.tiles.get(entry.key);
+        if (t) {
+          t.abortController.abort();
+          this.tiles.delete(entry.key);
+          this.loadingCount--;
+        }
+      }
+    }
+
     this.drainBuildQueue();
   }
 
@@ -294,11 +369,11 @@ export class TileManager {
         geometryCache.set(cacheKey, cached);
         putGeometryCached(idbKey, cached).catch(() => {});
       } else {
-        // Warm path: geometry cached, decode on main thread for tile data
-        const decoded = decodeTile(buffer, coord);
-        tile.roadData = decoded.roads;
-        tile.buildingData = decoded.buildings;
-        cacheSetDecoded(key, decoded);
+        // Warm path: geometry cached, decode in worker to avoid main thread block
+        const decoded = await this.workerPool.postDecodeJob({ buffer, tileCoord: coord });
+        tile.roadData = decoded.decodedRoads;
+        tile.buildingData = decoded.decodedBuildings;
+        cacheSetDecoded(key, { buildings: decoded.decodedBuildings, roads: decoded.decodedRoads });
       }
 
       this.meshCreationQueue.push({ key, cached, tFetch, t0, cacheHit, tGeometry });
@@ -309,6 +384,10 @@ export class TileManager {
       } else {
         console.warn(`Failed to load tile ${key}:`, err);
         tile.status = 'error';
+        const prev = this.failedTiles.get(key);
+        const retries = (prev?.retries ?? 0) + 1;
+        const backoff = Math.min(INITIAL_BACKOFF_MS * Math.pow(2, retries - 1), MAX_BACKOFF_MS);
+        this.failedTiles.set(key, { retries, nextRetryTime: Date.now() + backoff });
       }
       this.loadingCount--;
       this.onStateChange?.();
@@ -323,7 +402,7 @@ export class TileManager {
   }
 
   drainMeshQueue() {
-    const MAX_PER_FRAME = 8;
+    const MAX_PER_FRAME = 2;
     let processed = 0;
     let anyProcessed = false;
 
@@ -539,11 +618,20 @@ export class TileManager {
     }
   }
 
+  getTileEntries(): IterableIterator<[TileKey, TileState]> {
+    return this.tiles.entries();
+  }
+
+  retryFailedTiles() {
+    this.failedTiles.clear();
+  }
+
   dispose() {
     this.cancelPrefetch();
     this.buildQueue.length = 0;
     this.buildQueueKeys.clear();
     this.meshCreationQueue.length = 0;
+    this.failedTiles.clear();
     this.workerPool.dispose();
     for (const key of Array.from(this.tiles.keys())) {
       this.unloadTile(key);

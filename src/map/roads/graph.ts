@@ -5,7 +5,7 @@ import {
   isDefaultOneway,
   isHighwayType,
 } from './style';
-import { computeMiterNormals } from './renderer';
+import { computeMiterNormals } from './miter';
 import type { BuildingData, RoadData } from '../types';
 
 export interface GraphNode {
@@ -222,15 +222,19 @@ export class RoadGraph {
   private connectedNodes: number[] = [];
   private carSpawnNodes: number[] = [];
   private indexedBuildings: IndexedBuilding[] = [];
+  private buildingMap = new Map<number, IndexedBuilding>();
   private intersectionNodes = new Set<number>();
   private spatialGrid = new Map<string, number[]>();
   private spatialCellSize = 100;
+  private dijkDist: Float64Array = new Float64Array(0);
+  private dijkPrev: Int32Array = new Int32Array(0);
 
   build(roads: RoadData[]) {
     this.nodes = [];
     this.adjacency = new Map();
     this.grid = new Map();
     this.indexedBuildings = [];
+    this.buildingMap = new Map();
     this.intersectionNodes = new Set();
 
     for (const road of roads) {
@@ -370,16 +374,21 @@ export class RoadGraph {
   }
 
   private getOrCreateNode(p: { lat: number; lng: number; x: number; z: number }): number {
-    const gx = Math.round(p.x / CLUSTER_TOLERANCE);
-    const gz = Math.round(p.z / CLUSTER_TOLERANCE);
-    const key = `${gx},${gz}`;
-
-    const existing = this.grid.get(key);
-    if (existing !== undefined) return existing;
-
+    const gx = Math.floor(p.x / CLUSTER_TOLERANCE);
+    const gz = Math.floor(p.z / CLUSTER_TOLERANCE);
+    const tolSq = CLUSTER_TOLERANCE * CLUSTER_TOLERANCE;
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dz = -1; dz <= 1; dz++) {
+        const existing = this.grid.get(`${gx + dx},${gz + dz}`);
+        if (existing === undefined) continue;
+        const node = this.nodes[existing];
+        const ddx = node.x - p.x, ddz = node.z - p.z;
+        if (ddx * ddx + ddz * ddz < tolSq) return existing;
+      }
+    }
     const id = this.nodes.length;
     this.nodes.push({ id, lat: p.lat, lng: p.lng, x: p.x, z: p.z });
-    this.grid.set(key, id);
+    this.grid.set(`${gx},${gz}`, id);
     return id;
   }
 
@@ -482,12 +491,23 @@ export class RoadGraph {
     return parkingId;
   }
 
+  private ensureDijkArrays() {
+    const n = this.nodes.length;
+    if (this.dijkDist.length < n) {
+      this.dijkDist = new Float64Array(n);
+      this.dijkPrev = new Int32Array(n);
+    }
+  }
+
   dijkstra(startId: number, endId: number): number[] | null {
     if (startId === endId) return null;
     if (!this.adjacency.has(startId) || !this.adjacency.has(endId)) return null;
 
-    const dist = new Float64Array(this.nodes.length).fill(Infinity);
-    const prev = new Int32Array(this.nodes.length).fill(-1);
+    this.ensureDijkArrays();
+    const dist = this.dijkDist;
+    const prev = this.dijkPrev;
+    dist.fill(Infinity);
+    prev.fill(-1);
     dist[startId] = 0;
 
     const heap = new MinHeap();
@@ -601,25 +621,52 @@ export class RoadGraph {
     return this.carSpawnNodes[Math.floor(Math.random() * this.carSpawnNodes.length)];
   }
 
-  buildBuildingIndex(buildings: BuildingData[]) {
+  async buildBuildingIndex(buildings: BuildingData[], signal?: AbortSignal) {
     this.indexedBuildings = [];
     if (this.connectedNodes.length === 0) return;
 
-    // Build a grid of connected nodes for O(1) spatial lookup
-    const CELL = 100;
-    const nodeGrid = new Map<string, number[]>();
+    // Build segment spatial grid (50m cells) for O(1) nearest-segment lookup
+    const SEG_CELL = 50;
+    interface SegEntry {
+      ax: number; az: number; bx: number; bz: number;
+      edge: GraphEdge;
+      segIndex: number;
+    }
+    const segGrid = new Map<string, SegEntry[]>();
+    const indexed = new Set<string>();
+
     for (const nodeId of this.connectedNodes) {
-      const node = this.nodes[nodeId];
-      const cx = Math.floor(node.x / CELL);
-      const cz = Math.floor(node.z / CELL);
-      const key = `${cx},${cz}`;
-      let bucket = nodeGrid.get(key);
-      if (!bucket) { bucket = []; nodeGrid.set(key, bucket); }
-      bucket.push(nodeId);
+      const edges = this.adjacency.get(nodeId);
+      if (!edges) continue;
+      for (const edge of edges) {
+        if (isHighwayType(edge.roadType)) continue;
+        const eKey = `${Math.min(edge.from, edge.to)}-${Math.max(edge.from, edge.to)}-${edge.roadType}`;
+        if (indexed.has(eKey)) continue;
+        indexed.add(eKey);
+        const wp = edge.waypoints;
+        for (let i = 0; i < wp.length - 1; i++) {
+          const ax = wp[i].x, az = wp[i].z;
+          const bx = wp[i + 1].x, bz = wp[i + 1].z;
+          const dx = bx - ax, dz = bz - az;
+          if (dx * dx + dz * dz < 0.0001) continue;
+          const entry: SegEntry = { ax, az, bx, bz, edge, segIndex: i };
+          const minCx = Math.floor(Math.min(ax, bx) / SEG_CELL);
+          const maxCx = Math.floor(Math.max(ax, bx) / SEG_CELL);
+          const minCz = Math.floor(Math.min(az, bz) / SEG_CELL);
+          const maxCz = Math.floor(Math.max(az, bz) / SEG_CELL);
+          for (let cx = minCx; cx <= maxCx; cx++) {
+            for (let cz = minCz; cz <= maxCz; cz++) {
+              const key = `${cx},${cz}`;
+              let bucket = segGrid.get(key);
+              if (!bucket) { bucket = []; segGrid.set(key, bucket); }
+              bucket.push(entry);
+            }
+          }
+        }
+      }
     }
 
     // Dedicated intersection grid: includes ALL intersection nodes
-    // (not filtered by connectedNodes, fixing sink-node gap)
     const INT_CELL = 50;
     const intNodeGrid = new Map<string, Array<{ x: number; z: number }>>();
     for (const nodeId of this.intersectionNodes) {
@@ -629,7 +676,13 @@ export class RoadGraph {
       intNodeGrid.get(key)!.push({ x: n.x, z: n.z });
     }
 
-    for (const b of buildings) {
+    const YIELD_BATCH = 100;
+    for (let bi = 0; bi < buildings.length; bi++) {
+      if (bi > 0 && bi % YIELD_BATCH === 0) {
+        if (signal?.aborted) return;
+        await new Promise<void>(r => setTimeout(r, 0));
+      }
+      const b = buildings[bi];
       if (b.polygon.length === 0) continue;
       let sumLat = 0, sumLng = 0;
       for (const p of b.polygon) {
@@ -638,44 +691,42 @@ export class RoadGraph {
       }
       const centroid = project({ lat: sumLat / b.polygon.length, lng: sumLng / b.polygon.length });
 
-      const cx = Math.floor(centroid.x / CELL);
-      const cz = Math.floor(centroid.z / CELL);
+      // Query segment grid 3x3 neighborhood
+      const scx = Math.floor(centroid.x / SEG_CELL);
+      const scz = Math.floor(centroid.z / SEG_CELL);
 
-      // Collect nearby node IDs from 3x3 grid neighborhood
-      const nearbyNodes: number[] = [];
-      for (let dx = -1; dx <= 1; dx++) {
-        for (let dz = -1; dz <= 1; dz++) {
-          const bucket = nodeGrid.get(`${cx + dx},${cz + dz}`);
-          if (bucket) {
-            for (const nid of bucket) nearbyNodes.push(nid);
-          }
-        }
-      }
-      if (nearbyNodes.length === 0) continue;
-
-      // Iterate edges of nearby nodes, project centroid onto each edge polyline
       let bestDistSq = Infinity;
       let bestEdge: GraphEdge | null = null;
       let bestProj: ProjectionResult | null = null;
-      const testedEdges = new Set<string>();
+      const nearbyEdgeKeys = new Set<string>();
       const allNearbyEdges: GraphEdge[] = [];
 
-      for (const nodeId of nearbyNodes) {
-        const edges = this.adjacency.get(nodeId);
-        if (!edges) continue;
-        for (const edge of edges) {
-          if (isHighwayType(edge.roadType)) continue;
-          const edgeKey = `${Math.min(edge.from, edge.to)}-${Math.max(edge.from, edge.to)}-${edge.roadType}`;
-          if (testedEdges.has(edgeKey)) continue;
-          testedEdges.add(edgeKey);
-          allNearbyEdges.push(edge);
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const bucket = segGrid.get(`${scx + dx},${scz + dz}`);
+          if (!bucket) continue;
+          for (const seg of bucket) {
+            // Point-to-segment distance (O(1) per segment)
+            const abx = seg.bx - seg.ax, abz = seg.bz - seg.az;
+            const ab2 = abx * abx + abz * abz;
+            const t = Math.max(0, Math.min(1,
+              ((centroid.x - seg.ax) * abx + (centroid.z - seg.az) * abz) / ab2));
+            const cx = seg.ax + t * abx, cz = seg.az + t * abz;
+            const ddx = centroid.x - cx, ddz = centroid.z - cz;
+            const d2 = ddx * ddx + ddz * ddz;
 
-          const pts2d = edge.waypoints.map(w => ({ x: w.x, z: w.z }));
-          const proj = projectOnPolyline(centroid.x, centroid.z, pts2d);
-          if (proj && proj.distSq < bestDistSq) {
-            bestDistSq = proj.distSq;
-            bestEdge = edge;
-            bestProj = proj;
+            // Track unique edges for cross-road checks
+            const eKey = `${Math.min(seg.edge.from, seg.edge.to)}-${Math.max(seg.edge.from, seg.edge.to)}-${seg.edge.roadType}`;
+            if (!nearbyEdgeKeys.has(eKey)) {
+              nearbyEdgeKeys.add(eKey);
+              allNearbyEdges.push(seg.edge);
+            }
+
+            if (d2 < bestDistSq) {
+              bestDistSq = d2;
+              bestEdge = seg.edge;
+              bestProj = { x: cx, z: cz, segIndex: seg.segIndex, t, distSq: d2 };
+            }
           }
         }
       }
@@ -779,7 +830,7 @@ export class RoadGraph {
         dirX = -dirX; dirZ = -dirZ;
       }
 
-      this.indexedBuildings.push({
+      const ib: IndexedBuilding = {
         buildingId: b.id,
         centroidX: centroid.x,
         centroidZ: centroid.z,
@@ -787,13 +838,15 @@ export class RoadGraph {
         roadDirX: dirX,
         roadDirZ: dirZ,
         roadType: bestEdge.roadType,
-      });
+      };
+      this.indexedBuildings.push(ib);
+      this.buildingMap.set(b.id, ib);
     }
 
-    this.scanAndRemoveIntersectionParking();
+    await this.scanAndRemoveIntersectionParking(signal);
   }
 
-  private scanAndRemoveIntersectionParking(): void {
+  private async scanAndRemoveIntersectionParking(signal?: AbortSignal): Promise<void> {
     if (this.indexedBuildings.length === 0) return;
 
     // Phase 1: Build spatial grid of all road segments
@@ -866,6 +919,10 @@ export class RoadGraph {
     const toRemove: number[] = [];
 
     for (let bi = 0; bi < this.indexedBuildings.length; bi++) {
+      if (bi > 0 && bi % 50 === 0) {
+        if (signal?.aborted) return;
+        await new Promise<void>(r => setTimeout(r, 0));
+      }
       const b = this.indexedBuildings[bi];
       const node = this.nodes[b.nearestNodeId];
       if (!isInIntersection(node.x, node.z, b.roadDirX, b.roadDirZ)) continue;
@@ -914,6 +971,14 @@ export class RoadGraph {
     if (toRemove.length > 0) {
       const removeSet = new Set(toRemove);
       this.indexedBuildings = this.indexedBuildings.filter((_, i) => !removeSet.has(i));
+      this.rebuildBuildingMap();
+    }
+  }
+
+  private rebuildBuildingMap() {
+    this.buildingMap.clear();
+    for (const b of this.indexedBuildings) {
+      this.buildingMap.set(b.buildingId, b);
     }
   }
 
@@ -924,13 +989,14 @@ export class RoadGraph {
   }
 
   getBuildingDestination(buildingId: number): { nodeId: number; buildingX: number; buildingZ: number; roadDirX: number; roadDirZ: number; roadType: string } | null {
-    const b = this.indexedBuildings.find(ib => ib.buildingId === buildingId);
+    const b = this.buildingMap.get(buildingId);
     if (!b) return null;
     return { nodeId: b.nearestNodeId, buildingX: b.centroidX, buildingZ: b.centroidZ, roadDirX: b.roadDirX, roadDirZ: b.roadDirZ, roadType: b.roadType };
   }
 
   filterIndexedBuildings(keepIds: Set<number>): void {
     this.indexedBuildings = this.indexedBuildings.filter(b => keepIds.has(b.buildingId));
+    this.rebuildBuildingMap();
   }
 
   getIndexedBuildings(): IndexedBuilding[] {

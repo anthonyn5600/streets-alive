@@ -46,6 +46,10 @@ function App() {
   }, [engine]);
 
   useEffect(() => {
+    engine?.setTestRunnerEnabled(showTests);
+  }, [engine, showTests]);
+
+  useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && e.key === 'T') {
         e.preventDefault();

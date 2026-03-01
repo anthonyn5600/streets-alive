@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-const MAX_ENTRIES = 128;
+const MAX_ENTRIES = 200;
 
 export interface BuildingVertexRange {
   buildingId: number;
@@ -156,6 +156,10 @@ export function getGeometryCached(key: string): Promise<CachedTileGeometry | nul
           return;
         }
         if (Date.now() - entry.timestamp > GEO_TTL_MS) {
+          try {
+            const delTx = geoDB!.transaction(GEO_STORE_NAME, 'readwrite');
+            delTx.objectStore(GEO_STORE_NAME).delete(key);
+          } catch { /* ignore */ }
           resolve(null);
           return;
         }
@@ -214,6 +218,60 @@ export function evictOldGeometry(maxAgeMs: number = GEO_TTL_MS): Promise<void> {
       resolve();
     }
   });
+}
+
+export function evictExcessGeometry(maxEntries: number = 800): Promise<void> {
+  if (!geoDB) return Promise.resolve();
+
+  return new Promise((resolve) => {
+    try {
+      const tx = geoDB!.transaction(GEO_STORE_NAME, 'readwrite');
+      const store = tx.objectStore(GEO_STORE_NAME);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+
+      const countReq = store.count();
+
+      countReq.onsuccess = () => {
+        if (countReq.result <= maxEntries) {
+          return;
+        }
+
+        const entries: { key: string; timestamp: number }[] = [];
+        const cursorReq = store.openCursor();
+
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (cursor) {
+            const val = cursor.value as { key: string; timestamp: number };
+            entries.push({ key: val.key, timestamp: val.timestamp });
+            cursor.continue();
+          } else {
+            entries.sort((a, b) => a.timestamp - b.timestamp);
+            const toDelete = entries.slice(0, entries.length - maxEntries);
+            for (const entry of toDelete) {
+              store.delete(entry.key);
+            }
+          }
+        };
+        cursorReq.onerror = () => resolve();
+      };
+
+      countReq.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
+
+/** Exposed for testing only */
+export function _setGeoDB(database: IDBDatabase | null) {
+  geoDB = database;
+}
+
+/** Exposed for testing only */
+export function _getGeoDB(): IDBDatabase | null {
+  return geoDB;
 }
 
 export function geometryFromArrays(
