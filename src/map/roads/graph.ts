@@ -165,55 +165,88 @@ function offsetWaypointsRight(
   return result;
 }
 
-class MinHeap {
-  private heap: Array<{ node: number; cost: number }> = [];
+class FlatMinHeap {
+  private nodes: Int32Array;
+  private fCosts: Float64Array;
+  private gCosts: Float64Array;
+  private size = 0;
 
-  insert(node: number, cost: number) {
-    this.heap.push({ node, cost });
-    this.siftUp(this.heap.length - 1);
+  constructor(capacity = 1024) {
+    this.nodes = new Int32Array(capacity);
+    this.fCosts = new Float64Array(capacity);
+    this.gCosts = new Float64Array(capacity);
+  }
+
+  private grow() {
+    const newCap = this.nodes.length * 2;
+    const newNodes = new Int32Array(newCap);
+    const newF = new Float64Array(newCap);
+    const newG = new Float64Array(newCap);
+    newNodes.set(this.nodes);
+    newF.set(this.fCosts);
+    newG.set(this.gCosts);
+    this.nodes = newNodes;
+    this.fCosts = newF;
+    this.gCosts = newG;
+  }
+
+  insert(node: number, gCost: number, fCost: number) {
+    if (this.size === this.nodes.length) this.grow();
+    const i = this.size++;
+    this.nodes[i] = node;
+    this.fCosts[i] = fCost;
+    this.gCosts[i] = gCost;
+    this.siftUp(i);
   }
 
   extractMin(): { node: number; cost: number } | null {
-    const heap = this.heap;
-    if (heap.length === 0) return null;
-    const min = heap[0];
-    const last = heap.pop()!;
-    if (heap.length > 0) {
-      heap[0] = last;
+    if (this.size === 0) return null;
+    const node = this.nodes[0];
+    const gCost = this.gCosts[0];
+    this.size--;
+    if (this.size > 0) {
+      this.nodes[0] = this.nodes[this.size];
+      this.fCosts[0] = this.fCosts[this.size];
+      this.gCosts[0] = this.gCosts[this.size];
       this.siftDown(0);
     }
-    return min;
+    return { node, cost: gCost };
   }
 
   isEmpty(): boolean {
-    return this.heap.length === 0;
+    return this.size === 0;
+  }
+
+  reset() {
+    this.size = 0;
   }
 
   private siftUp(i: number) {
-    const heap = this.heap;
+    const nodes = this.nodes, f = this.fCosts, g = this.gCosts;
     while (i > 0) {
       const parent = (i - 1) >> 1;
-      if (heap[i].cost >= heap[parent].cost) break;
-      const tmp = heap[i];
-      heap[i] = heap[parent];
-      heap[parent] = tmp;
+      if (f[i] >= f[parent]) break;
+      // swap
+      let tmp = nodes[i]; nodes[i] = nodes[parent]; nodes[parent] = tmp;
+      let tmpF = f[i]; f[i] = f[parent]; f[parent] = tmpF;
+      let tmpG = g[i]; g[i] = g[parent]; g[parent] = tmpG;
       i = parent;
     }
   }
 
   private siftDown(i: number) {
-    const heap = this.heap;
-    const n = heap.length;
+    const nodes = this.nodes, f = this.fCosts, g = this.gCosts;
+    const n = this.size;
     while (true) {
       let smallest = i;
       const left = 2 * i + 1;
       const right = 2 * i + 2;
-      if (left < n && heap[left].cost < heap[smallest].cost) smallest = left;
-      if (right < n && heap[right].cost < heap[smallest].cost) smallest = right;
+      if (left < n && f[left] < f[smallest]) smallest = left;
+      if (right < n && f[right] < f[smallest]) smallest = right;
       if (smallest === i) break;
-      const tmp = heap[i];
-      heap[i] = heap[smallest];
-      heap[smallest] = tmp;
+      let tmp = nodes[i]; nodes[i] = nodes[smallest]; nodes[smallest] = tmp;
+      let tmpF = f[i]; f[i] = f[smallest]; f[smallest] = tmpF;
+      let tmpG = g[i]; g[i] = g[smallest]; g[smallest] = tmpG;
       i = smallest;
     }
   }
@@ -232,6 +265,9 @@ export class RoadGraph {
   private spatialCellSize = 100;
   private dijkDist: Float64Array = new Float64Array(0);
   private dijkPrev: Int32Array = new Int32Array(0);
+  private dijkGen: Uint32Array = new Uint32Array(0);
+  private currentGen = 0;
+  private heap = new FlatMinHeap();
 
   build(roads: RoadData[]) {
     this.nodes = [];
@@ -562,6 +598,7 @@ export class RoadGraph {
     if (this.dijkDist.length < n) {
       this.dijkDist = new Float64Array(n);
       this.dijkPrev = new Int32Array(n);
+      this.dijkGen = new Uint32Array(n);
     }
   }
 
@@ -572,12 +609,29 @@ export class RoadGraph {
     this.ensureDijkArrays();
     const dist = this.dijkDist;
     const prev = this.dijkPrev;
-    dist.fill(Infinity);
-    prev.fill(-1);
-    dist[startId] = 0;
+    const gen = this.dijkGen;
 
-    const heap = new MinHeap();
-    heap.insert(startId, 0);
+    // Generation counter: O(1) reset instead of O(N) fill
+    if (this.currentGen >= 0xFFFFFFFF) {
+      gen.fill(0);
+      this.currentGen = 0;
+    }
+    const thisGen = ++this.currentGen;
+
+    // A* heuristic target coords
+    const endNode = this.nodes[endId];
+    const endX = endNode.x;
+    const endZ = endNode.z;
+
+    gen[startId] = thisGen;
+    dist[startId] = 0;
+    prev[startId] = -1;
+
+    const heap = this.heap;
+    heap.reset();
+    const startNode = this.nodes[startId];
+    const startH = Math.sqrt((startNode.x - endX) * (startNode.x - endX) + (startNode.z - endZ) * (startNode.z - endZ));
+    heap.insert(startId, 0, startH);
 
     while (!heap.isEmpty()) {
       const entry = heap.extractMin()!;
@@ -596,15 +650,18 @@ export class RoadGraph {
           turnPenalty = this.computeTurnPenalty(prevNode, node, edge.to);
         }
         const newCost = dist[node] + edge.cost + turnPenalty;
-        if (newCost < dist[edge.to]) {
+        if (gen[edge.to] !== thisGen || newCost < dist[edge.to]) {
+          gen[edge.to] = thisGen;
           dist[edge.to] = newCost;
           prev[edge.to] = node;
-          heap.insert(edge.to, newCost);
+          const toNode = this.nodes[edge.to];
+          const h = Math.sqrt((toNode.x - endX) * (toNode.x - endX) + (toNode.z - endZ) * (toNode.z - endZ));
+          heap.insert(edge.to, newCost, newCost + h);
         }
       }
     }
 
-    if (dist[endId] === Infinity) return null;
+    if (gen[endId] !== thisGen || dist[endId] === Infinity) return null;
 
     // Reconstruct path
     const path: number[] = [];
@@ -705,11 +762,13 @@ export class RoadGraph {
     }
 
     // Build segment spatial grid (50m cells) for O(1) nearest-segment lookup
+    // Unified grid: used both for building-to-road matching and intersection parking scan
     const SEG_CELL = 50;
     interface SegEntry {
       ax: number; az: number; bx: number; bz: number;
       edge: GraphEdge;
       segIndex: number;
+      dirX: number; dirZ: number; halfCasing: number;
     }
     const segGrid = new Map<string, SegEntry[]>();
     const indexed = new Set<string>();
@@ -723,12 +782,15 @@ export class RoadGraph {
         if (indexed.has(eKey)) continue;
         indexed.add(eKey);
         const wp = edge.waypoints;
+        const halfCasing = getCasingWidth(edge.roadType) / 2;
         for (let i = 0; i < wp.length - 1; i++) {
           const ax = wp[i].x, az = wp[i].z;
           const bx = wp[i + 1].x, bz = wp[i + 1].z;
           const dx = bx - ax, dz = bz - az;
-          if (dx * dx + dz * dz < 0.0001) continue;
-          const entry: SegEntry = { ax, az, bx, bz, edge, segIndex: i };
+          const lenSq = dx * dx + dz * dz;
+          if (lenSq < 0.0001) continue;
+          const len = Math.sqrt(lenSq);
+          const entry: SegEntry = { ax, az, bx, bz, edge, segIndex: i, dirX: dx / len, dirZ: dz / len, halfCasing };
           const minCx = Math.floor(Math.min(ax, bx) / SEG_CELL);
           const maxCx = Math.floor(Math.max(ax, bx) / SEG_CELL);
           const minCz = Math.floor(Math.min(az, bz) / SEG_CELL);
@@ -929,49 +991,15 @@ export class RoadGraph {
     this.indexedBuildings = newIndex;
     this.rebuildBuildingMap();
 
-    await this.scanAndRemoveIntersectionParking(signal);
+    await this.scanAndRemoveIntersectionParking(segGrid, SEG_CELL, signal);
   }
 
-  private async scanAndRemoveIntersectionParking(signal?: AbortSignal): Promise<void> {
+  private async scanAndRemoveIntersectionParking(
+    segGrid: Map<string, Array<{ ax: number; az: number; bx: number; bz: number; dirX: number; dirZ: number; halfCasing: number }>>,
+    SEG_CELL: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
     if (this.indexedBuildings.length === 0) return;
-
-    // Phase 1: Build spatial grid of all road segments
-    const SEG_CELL = 50;
-    const segGrid = new Map<string, Array<{
-      ax: number; az: number; bx: number; bz: number;
-      dirX: number; dirZ: number; halfCasing: number;
-    }>>();
-
-    const indexed = new Set<string>();
-    for (const [, edges] of this.adjacency) {
-      for (const edge of edges) {
-        if (isHighwayType(edge.roadType)) continue;
-        const eKey = `${Math.min(edge.from, edge.to)}-${Math.max(edge.from, edge.to)}-${edge.roadType}`;
-        if (indexed.has(eKey)) continue;
-        indexed.add(eKey);
-        const wp = edge.waypoints;
-        const halfCasing = getCasingWidth(edge.roadType) / 2;
-        for (let i = 0; i < wp.length - 1; i++) {
-          const ax = wp[i].x, az = wp[i].z;
-          const bx = wp[i + 1].x, bz = wp[i + 1].z;
-          const dx = bx - ax, dz = bz - az;
-          const len = Math.sqrt(dx * dx + dz * dz);
-          if (len < 0.01) continue;
-          const entry = { ax, az, bx, bz, dirX: dx / len, dirZ: dz / len, halfCasing };
-          const minCx = Math.floor(Math.min(ax, bx) / SEG_CELL);
-          const maxCx = Math.floor(Math.max(ax, bx) / SEG_CELL);
-          const minCz = Math.floor(Math.min(az, bz) / SEG_CELL);
-          const maxCz = Math.floor(Math.max(az, bz) / SEG_CELL);
-          for (let cx = minCx; cx <= maxCx; cx++) {
-            for (let cz = minCz; cz <= maxCz; cz++) {
-              const key = `${cx},${cz}`;
-              if (!segGrid.has(key)) segGrid.set(key, []);
-              segGrid.get(key)!.push(entry);
-            }
-          }
-        }
-      }
-    }
 
     const isInIntersection = (px: number, pz: number, rdx: number, rdz: number): boolean => {
       const cx = Math.floor(px / SEG_CELL);

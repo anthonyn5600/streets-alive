@@ -171,11 +171,13 @@ export interface CarTestData {
   state: 'driving' | 'parked';
   waypointCount: number;
   waypointIndex: number;
+  originBuildingId: number | null;
   destinationBuildingId: number | null;
   householdId: number;
   activity: ActivityType | null;
   dwellTotal: number;
   dwellRemaining: number;
+  speed: number;
   occupantIds: number[];
   guestOccupantIds: number[];
   pendingDropoffs: number;
@@ -187,6 +189,8 @@ export interface PersonTestData {
   id: number;
   locationType: string;
   locationCarId: number | undefined;
+  locationBuildingId: number | undefined;
+  householdId: number;
 }
 
 export interface RuntimeTestSnapshot {

@@ -44,11 +44,16 @@ export class RuntimeTestRunner {
     return {
       cars: carManager.getCarTestData(),
       households: population.getHouseholdInfos(),
-      persons: Array.from(population.people.values()).map(p => ({
-        id: p.id,
-        locationType: p.location.type,
-        locationCarId: p.location.carId,
-      })),
+      persons: Array.from(population.people.values()).map(p => {
+        const h = population.getHouseholdByPerson(p.id);
+        return {
+          id: p.id,
+          locationType: p.location.type,
+          locationCarId: p.location.carId,
+          locationBuildingId: p.location.buildingId,
+          householdId: h ? h.id : -1,
+        };
+      }),
       indexedBuildingIds: carManager.getIndexedBuildingIds(),
       buildingRoleIds: new Set(population.getBuildingRoles().keys()),
       shoppingBuildingCount: population.shoppingBuildingIds.size,

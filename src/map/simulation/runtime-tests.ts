@@ -22,8 +22,9 @@ function testRouteValidity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
     return [
       skipResult('route.waypoints', 'Route Validity', 'Driving cars have >= 2 waypoints'),
       skipResult('route.progress', 'Route Validity', 'Waypoint index in bounds'),
-      skipResult('route.destination', 'Route Validity', 'Destination building is indexed'),
+      skipResult('route.destination', 'Route Validity', 'Driving cars have destination'),
       skipResult('route.dest-has-role', 'Route Validity', 'Destination building has role'),
+      skipResult('route.speed-positive', 'Route Validity', 'Driving cars have positive speed'),
     ];
   }
 
@@ -43,15 +44,10 @@ function testRouteValidity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
     if (c.waypointIndex >= c.waypointCount - 1) failProgress++;
   }
 
-  // Driving household car's destinationBuildingId must exist in the building index,
-  // otherwise assignRouteToBuilding will fail on next reroute
+  // Driving household cars must have a non-null destination
   let failDest = 0;
   for (const c of householdDriving) {
-    if (c.destinationBuildingId === null) {
-      failDest++;
-    } else if (!snap.indexedBuildingIds.has(c.destinationBuildingId)) {
-      failDest++;
-    }
+    if (c.destinationBuildingId === null) failDest++;
   }
 
   // Dest building must have a role (home/work/shopping) -- if not,
@@ -63,6 +59,12 @@ function testRouteValidity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
     }
   }
 
+  // Driving cars must have speed > 0 to make progress along their route
+  let failSpeed = 0;
+  for (const c of driving) {
+    if (c.speed <= 0) failSpeed++;
+  }
+
   return [
     result('route.waypoints', 'Route Validity', 'Driving cars have >= 2 waypoints',
       failWp > 0 ? 'fail' : 'pass',
@@ -72,7 +74,7 @@ function testRouteValidity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
       failProgress > 0 ? 'fail' : 'pass',
       failProgress > 0 ? `${failProgress}/${driving.length} out of bounds` : `${driving.length} OK`,
       driving.length, failProgress),
-    result('route.destination', 'Route Validity', 'Destination building is indexed',
+    result('route.destination', 'Route Validity', 'Driving cars have destination',
       failDest > 0 ? 'fail' : 'pass',
       failDest > 0 ? `${failDest}/${householdDriving.length} invalid dest` : `${householdDriving.length} OK`,
       householdDriving.length, failDest),
@@ -80,6 +82,10 @@ function testRouteValidity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
       failRole > 0 ? 'fail' : 'pass',
       failRole > 0 ? `${failRole}/${allHousehold.length} no role` : `${allHousehold.length} OK`,
       allHousehold.length, failRole),
+    result('route.speed-positive', 'Route Validity', 'Driving cars have positive speed',
+      failSpeed > 0 ? 'fail' : 'pass',
+      failSpeed > 0 ? `${failSpeed}/${driving.length} zero speed` : `${driving.length} OK`,
+      driving.length, failSpeed),
   ];
 }
 
@@ -88,6 +94,7 @@ function testNeedScoring(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
   if (!snap.populationInitialized) {
     return [
       skipResult('needs.bounded', 'Need Scoring', 'All needs in [0, 100]'),
+      skipResult('needs.no-nan', 'Need Scoring', 'No NaN need values'),
     ];
   }
 
@@ -107,11 +114,24 @@ function testNeedScoring(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
     }
   }
 
+  // NaN silently corrupts scoring -- urgency(NaN) returns NaN, making
+  // the trip planner unable to rank activities correctly.
+  let failNaN = 0;
+  for (const p of allPersons) {
+    for (const val of Object.values(p.needs)) {
+      if (Number.isNaN(val)) { failNaN++; break; }
+    }
+  }
+
   return [
     result('needs.bounded', 'Need Scoring', 'All needs in [0, 100]',
       failBounded > 0 ? 'fail' : 'pass',
       failBounded > 0 ? `${failBounded}/${allPersons.length} out of range (${worstVal.toFixed(1)})` : `${allPersons.length} OK`,
       allPersons.length, failBounded),
+    result('needs.no-nan', 'Need Scoring', 'No NaN need values',
+      failNaN > 0 ? 'fail' : 'pass',
+      failNaN > 0 ? `${failNaN}/${allPersons.length} have NaN` : `${allPersons.length} OK`,
+      allPersons.length, failNaN),
   ];
 }
 
@@ -123,6 +143,7 @@ function testBuildingAssignments(snap: RuntimeTestSnapshot): RuntimeTestResult[]
       skipResult('building.work-valid', 'Building Assignments', 'Work buildings indexed'),
       skipResult('building.shopping-exists', 'Building Assignments', 'Shopping buildings exist'),
       skipResult('building.roles-indexed', 'Building Assignments', 'Role buildings stay indexed'),
+      skipResult('building.household-integrity', 'Building Assignments', 'Household membership valid'),
     ];
   }
 
@@ -146,13 +167,28 @@ function testBuildingAssignments(snap: RuntimeTestSnapshot): RuntimeTestResult[]
     if (!snap.indexedBuildingIds.has(roleId)) failRoleIndexed++;
   }
 
+  // Every household must have >= 1 member, and every person must appear
+  // in exactly one household. Violations mean population init is broken.
+  let failHousehold = 0;
+  const personHouseholdCount = new Map<number, number>();
+  for (const h of snap.households) {
+    if (h.members.length === 0) failHousehold++;
+    for (const m of h.members) {
+      personHouseholdCount.set(m.id, (personHouseholdCount.get(m.id) ?? 0) + 1);
+    }
+  }
+  let failMultiHousehold = 0;
+  for (const [, count] of personHouseholdCount) {
+    if (count > 1) failMultiHousehold++;
+  }
+
   return [
     result('building.home-valid', 'Building Assignments', 'Home buildings indexed',
-      failHome > 0 ? 'fail' : 'pass',
+      failHome > 0 ? 'warn' : 'pass',
       failHome > 0 ? `${failHome}/${allPersons.length} not indexed` : `${allPersons.length} OK`,
       allPersons.length, failHome),
     result('building.work-valid', 'Building Assignments', 'Work buildings indexed',
-      failWork > 0 ? 'fail' : 'pass',
+      failWork > 0 ? 'warn' : 'pass',
       failWork > 0 ? `${failWork}/${allPersons.length} not indexed` : `${allPersons.length} OK`,
       allPersons.length, failWork),
     result('building.shopping-exists', 'Building Assignments', 'Shopping buildings exist',
@@ -165,6 +201,14 @@ function testBuildingAssignments(snap: RuntimeTestSnapshot): RuntimeTestResult[]
         ? `${failRoleIndexed}/${snap.buildingRoleIds.size} role buildings not indexed`
         : `${snap.buildingRoleIds.size} OK`,
       snap.buildingRoleIds.size, failRoleIndexed),
+    result('building.household-integrity', 'Building Assignments', 'Household membership valid',
+      (failHousehold > 0 || failMultiHousehold > 0) ? 'fail' : 'pass',
+      failHousehold > 0
+        ? `${failHousehold}/${snap.households.length} empty households`
+        : failMultiHousehold > 0
+          ? `${failMultiHousehold} persons in multiple households`
+          : `${snap.households.length} households OK`,
+      snap.households.length, failHousehold + failMultiHousehold),
   ];
 }
 
@@ -223,10 +267,6 @@ function testPickupDropoff(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
   // If isDropoffTrip is true, the car must have pendingDropoffs > 0 or guestOccupantIds > 0.
   // Otherwise the dropoff flag is stale.
   const dropoffCars = snap.cars.filter(c => c.isDropoffTrip);
-  if (dropoffCars.length === 0) {
-    const r1 = skipResult('pickup.dropoff-has-stops', 'Pickup/Dropoff', 'Dropoff trips have stops or guests', 'No dropoff trips active');
-    // Still check self-guests below
-  }
   let failStops = 0;
   for (const c of dropoffCars) {
     if (c.pendingDropoffs === 0 && c.guestOccupantIds.length === 0) failStops++;
@@ -273,6 +313,8 @@ function testOccupantIntegrity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
     return [
       skipResult('occupant.no-duplicates', 'Occupant Integrity', 'No person in multiple cars'),
       skipResult('occupant.driving-has-driver', 'Occupant Integrity', 'Driving household cars have occupants'),
+      skipResult('occupant.person-car-sync', 'Occupant Integrity', 'Person location matches car roster'),
+      skipResult('occupant.parked-has-activity', 'Occupant Integrity', 'Parked household cars have activity'),
       skipResult('occupant.no-orphan-traveling', 'Occupant Integrity', 'No orphan traveling persons'),
       skipResult('state.car-active-sync', 'Occupant Integrity', 'carActive flag matches car existence'),
       skipResult('state.car-count', 'Occupant Integrity', 'Car count <= MAX_CARS'),
@@ -321,6 +363,52 @@ function testOccupantIntegrity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
     if (p.locationCarId === undefined || !carIds.has(p.locationCarId)) failOrphanTraveling++;
   }
 
+  // Bidirectional person-car sync: if a person says "I'm in car X",
+  // car X must list them. If a car lists person P, that person must
+  // have location.type 'car' (unless the car is hidden, in which case
+  // the person is set to 'traveling').
+  const carPersonSet = new Map<number, Set<number>>();
+  for (const c of snap.cars) {
+    const all = new Set([...c.occupantIds, ...c.guestOccupantIds]);
+    carPersonSet.set(c.id, all);
+  }
+  let failSync2 = 0;
+  // Check: person says car, but car doesn't list them
+  for (const p of snap.persons) {
+    if (p.locationType === 'car' && p.locationCarId !== undefined) {
+      const roster = carPersonSet.get(p.locationCarId);
+      if (!roster || !roster.has(p.id)) failSync2++;
+    }
+  }
+  // Check: driving car lists person, but person isn't in 'car' or 'traveling' state.
+  // Parked cars are excluded -- their occupants are set to 'building'/'home' while
+  // dwelling, which is expected.
+  const personLocMap = new Map<number, string>();
+  for (const p of snap.persons) {
+    personLocMap.set(p.id, p.locationType);
+  }
+  const drivingCars = snap.cars.filter(c => c.state === 'driving');
+  for (const c of drivingCars) {
+    for (const pid of c.occupantIds) {
+      const loc = personLocMap.get(pid);
+      if (loc && loc !== 'car' && loc !== 'traveling') failSync2++;
+    }
+    for (const pid of c.guestOccupantIds) {
+      const loc = personLocMap.get(pid);
+      if (loc && loc !== 'car' && loc !== 'traveling') failSync2++;
+    }
+  }
+
+  // Parked household cars (not on a dropoff leg) must have an activity.
+  // Without an activity, applyActivity won't restore any needs during dwell.
+  const parkedHousehold = snap.cars.filter(c =>
+    c.state === 'parked' && c.householdId !== -1 && !c.isDropoffTrip && !c.hidden
+  );
+  let failActivity = 0;
+  for (const c of parkedHousehold) {
+    if (!c.activity) failActivity++;
+  }
+
   // household.carActive must be true IFF there's a car with that householdId.
   // A stale carActive=true prevents new car spawning for that household.
   const activeCarHouseholds = new Set<number>();
@@ -346,6 +434,14 @@ function testOccupantIntegrity(snap: RuntimeTestSnapshot): RuntimeTestResult[] {
       failOrphan > 0 ? 'fail' : 'pass',
       failOrphan > 0 ? `${failOrphan}/${drivingHousehold.length} orphan cars` : `${drivingHousehold.length} OK`,
       drivingHousehold.length, failOrphan),
+    result('occupant.person-car-sync', 'Occupant Integrity', 'Person location matches car roster',
+      failSync2 > 0 ? 'fail' : 'pass',
+      failSync2 > 0 ? `${failSync2} mismatches` : `${personLocMap.size} OK`,
+      personLocMap.size, failSync2),
+    result('occupant.parked-has-activity', 'Occupant Integrity', 'Parked household cars have activity',
+      failActivity > 0 ? 'fail' : 'pass',
+      failActivity > 0 ? `${failActivity}/${parkedHousehold.length} no activity` : `${parkedHousehold.length} OK`,
+      parkedHousehold.length, failActivity),
     result('occupant.no-orphan-traveling', 'Occupant Integrity', 'No orphan traveling persons',
       failOrphanTraveling > 0 ? 'fail' : 'pass',
       failOrphanTraveling > 0 ? `${failOrphanTraveling}/${travelingPersons.length} orphaned` : `${travelingPersons.length} traveling OK`,

@@ -985,19 +985,8 @@ export class CarManager {
     let originPos: { x: number; z: number } | null = null;
     let destPos: { x: number; z: number } | null = null;
 
-    if (car.originBuildingId !== null) {
-      const dest = this.graph.getBuildingDestination(car.originBuildingId);
-      if (dest) originPos = { x: dest.buildingX, z: dest.buildingZ };
-    }
-    if (!originPos && car.waypoints.length > 0) {
+    if (car.waypoints.length > 0) {
       originPos = { x: car.waypoints[0].x, z: car.waypoints[0].z };
-    }
-
-    if (car.destinationBuildingId !== null) {
-      const dest = this.graph.getBuildingDestination(car.destinationBuildingId);
-      if (dest) destPos = { x: dest.buildingX, z: dest.buildingZ };
-    }
-    if (!destPos && car.waypoints.length > 0) {
       const last = car.waypoints[car.waypoints.length - 1];
       destPos = { x: last.x, z: last.z };
     }
@@ -1141,11 +1130,13 @@ export class CarManager {
       state: c.state,
       waypointCount: c.waypoints.length,
       waypointIndex: c.waypointIndex,
+      originBuildingId: c.originBuildingId,
       destinationBuildingId: c.destinationBuildingId,
       householdId: c.householdId,
       activity: c.activity,
       dwellTotal: c.dwellTotal,
       dwellRemaining: c.dwellRemaining,
+      speed: c.speed,
       occupantIds: [...c.occupantIds],
       guestOccupantIds: [...c.guestOccupantIds],
       pendingDropoffs: c.pendingDropoffs.length,
@@ -1252,11 +1243,6 @@ export class CarManager {
         ? this.graph.getBuildingRoadName(c.originBuildingId) : null;
       const destinationAddress = c.destinationBuildingId !== null
         ? this.graph.getBuildingRoadName(c.destinationBuildingId) : null;
-      const originDest = c.originBuildingId !== null
-        ? this.graph.getBuildingDestination(c.originBuildingId) : null;
-      const destDest = c.destinationBuildingId !== null
-        ? this.graph.getBuildingDestination(c.destinationBuildingId) : null;
-
       return {
         id: c.id,
         color: c.color,
@@ -1279,8 +1265,8 @@ export class CarManager {
         destinationBuildingId: c.destinationBuildingId,
         originAddress,
         destinationAddress,
-        originPos: originDest ? { x: originDest.buildingX, z: originDest.buildingZ } : null,
-        destinationPos: destDest ? { x: destDest.buildingX, z: destDest.buildingZ } : null,
+        originPos: c.waypoints.length > 0 ? { x: c.waypoints[0].x, z: c.waypoints[0].z } : null,
+        destinationPos: c.waypoints.length > 0 ? { x: c.waypoints[c.waypoints.length - 1].x, z: c.waypoints[c.waypoints.length - 1].z } : null,
       };
     });
   }
