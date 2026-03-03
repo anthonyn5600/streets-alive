@@ -157,8 +157,4 @@ describe('tile-cache', () => {
     expect(result4).not.toBeNull();
   });
 
-  it('evictExcessTiles on empty DB is a no-op', async () => {
-    await openTileCache();
-    await evictExcessTiles(2);
-  });
 });

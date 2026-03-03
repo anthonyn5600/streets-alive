@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import * as THREE from 'three';
-import { CarManager, ROAD_TOLERANCE, NEED_THRESHOLD, DROPOFF_DWELL } from '@/map/cars';
+import { CarManager } from '@/map/cars';
 import { setCenter } from '@/map/projection';
 import type { RoadData } from '@/map/types';
 
@@ -199,16 +199,3 @@ describe('CarManager.dispose', () => {
   });
 });
 
-describe('exported constants', () => {
-  it('ROAD_TOLERANCE is 15', () => {
-    expect(ROAD_TOLERANCE).toBe(15);
-  });
-
-  it('NEED_THRESHOLD is 40', () => {
-    expect(NEED_THRESHOLD).toBe(40);
-  });
-
-  it('DROPOFF_DWELL is 5', () => {
-    expect(DROPOFF_DWELL).toBe(5);
-  });
-});

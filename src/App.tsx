@@ -23,6 +23,7 @@ function App() {
   const [households, setHouseholds] = useState<HouseholdInfo[]>([]);
   const [testResults, setTestResults] = useState<RuntimeTestResult[]>([]);
   const [showTests, setShowTests] = useState(false);
+  const [simTime, setSimTime] = useState('');
 
   const handleEngineReady = useCallback((eng: MapEngine) => {
     setEngine(eng);
@@ -37,11 +38,13 @@ function App() {
     engine.setOnCarStateChange(setCars);
     engine.setOnHouseholdChange(setHouseholds);
     engine.setOnTestResults(setTestResults);
+    engine.setOnSimTimeChange(setSimTime);
     engine.setParkingDebug(false);
     return () => {
       engine.setOnCarStateChange(() => {});
       engine.setOnHouseholdChange(() => {});
       engine.setOnTestResults(() => {});
+      engine.setOnSimTimeChange(() => {});
     };
   }, [engine]);
 
@@ -49,24 +52,26 @@ function App() {
     engine?.setTestRunnerEnabled(showTests);
   }, [engine, showTests]);
 
+  const handleToggleTests = useCallback(() => setShowTests(prev => !prev), []);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.ctrlKey && e.shiftKey && e.key === 'T') {
         e.preventDefault();
-        setShowTests(prev => !prev);
+        handleToggleTests();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [handleToggleTests]);
 
   return (
     <TooltipProvider>
       <div className="relative w-full h-full">
         <MapCanvas onEngineReady={handleEngineReady} onStateChange={handleStateChange} />
-        <AppSidebar engine={engine} cars={cars} households={households} testResults={testResults} showTests={showTests} onToggleTests={() => setShowTests(prev => !prev)} />
+        <AppSidebar engine={engine} cars={cars} households={households} testResults={testResults} showTests={showTests} onToggleTests={handleToggleTests} />
         <RoutePanel engine={engine} cars={cars} />
-        <StatusPill mapState={mapState} engine={engine} />
+        <StatusPill mapState={mapState} engine={engine} simTime={simTime} />
       </div>
     </TooltipProvider>
   );

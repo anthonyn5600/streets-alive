@@ -3,9 +3,10 @@ import { RoadGraph, SPEED_WEIGHTS } from './roads/graph';
 import { computeMiterNormals } from './roads/miter';
 import { getLaneOffset, getParkingOffset } from './roads/style';
 import type { PopulationManager } from './simulation/population';
+import { PERSONALITY_CONFIG, ACTIVITY_RESTORE, cheapestMealCost, cheapestMallCost, SUPERMARKET_COST, RESTAURANT_COSTS, MALL_COSTS } from './simulation/population';
 import type { TripPlanner } from './simulation/trip-planner';
-import type { ProgressBarManager } from './simulation/progress-bar';
-import type { ActivityType, BuildingData, CarInfo, CarTestData, PersonInfo, RoadData, SimCarInfo } from './types';
+import type { SimClock } from './simulation/clock';
+import type { ActivityType, BuildingData, CarInfo, CarTestData, NeedType, PersonInfo, RoadData, SimCarInfo } from './types';
 
 const CAR_Y = 0.8;
 const ROUTE_Y = 0.45;
@@ -17,6 +18,20 @@ const CAR_COLORS = [0xcc3333, 0x3333cc, 0x33aa33, 0xdd8800, 0x8833aa, 0x338888];
 export const ROAD_TOLERANCE = 15;
 export const NEED_THRESHOLD = 40;
 export const DROPOFF_DWELL = 5;
+const SUPERMARKET_DWELL = 3;
+
+export function isShiftOver(hour: number, shiftEnd: number, shiftStart: number): boolean {
+  // Never consider shift over if we're in the pre-shift arrival window
+  if (isNearShiftStart(hour, shiftStart)) return false;
+  if (shiftEnd > shiftStart) return hour >= shiftEnd;
+  // Overnight shift (e.g. 22-6): over when past end AND before start
+  return hour >= shiftEnd && hour < shiftStart;
+}
+
+export function isNearShiftStart(hour: number, shiftStart: number): boolean {
+  const diff = ((shiftStart - hour) % 24 + 24) % 24;
+  return diff <= 2 || diff >= 22;
+}
 
 const MARKER_Y = 35;
 const MARKER_SCALE = 20;
@@ -46,8 +61,6 @@ interface Car {
   isDropoffTrip: boolean;
   householdId: number;
   activity: ActivityType | null;
-  dwellRemaining: number;
-  dwellTotal: number;
   originBuildingId: number | null;
   destinationBuildingId: number | null;
   originMarker: THREE.Sprite | null;
@@ -57,6 +70,8 @@ interface Car {
   hidden: boolean;
   hiddenTimer: number;
   hideGraceTimer: number;
+  dwellTimer: number;
+  hasGroceries: boolean;
 }
 
 let nextCarId = 1;
@@ -181,6 +196,7 @@ export class CarManager {
   private spawnFailedClearTimer = 0;
   private buildAbort: AbortController | null = null;
   private graphBusy = false;
+  private graphGeneration = 0;
   private savedRoleParkings = new Map<number, {
     centroidX: number; centroidZ: number;
     parkX: number; parkZ: number;
@@ -191,7 +207,7 @@ export class CarManager {
 
   population: PopulationManager | null = null;
   tripPlanner: TripPlanner | null = null;
-  progressBars: ProgressBarManager | null = null;
+  rolesVersion = 0;
 
   onCarStateChange: ((cars: SimCarInfo[]) => void) | null = null;
 
@@ -213,6 +229,7 @@ export class CarManager {
     const abort = new AbortController();
     this.buildAbort = abort;
 
+    const gen = ++this.graphGeneration;
     this.graphBusy = true;
 
     this.graph.build(roads);
@@ -221,7 +238,7 @@ export class CarManager {
     } else {
       await this.graph.buildBuildingIndex(buildings, abort.signal);
       if (abort.signal.aborted) {
-        this.graphBusy = false;
+        if (gen === this.graphGeneration) this.graphBusy = false;
         return;
       }
     }
@@ -229,8 +246,10 @@ export class CarManager {
     // Initialize population once we have enough buildings
     if (this.population && !this.population.isInitialized()) {
       const indexed = this.graph.getIndexedBuildings();
-      if (indexed.length >= 30) {
-        this.population.init(indexed);
+      const named = indexed.filter(b => b.roadName !== '');
+      if (named.length >= 30) {
+        this.population.init(named);
+        this.rolesVersion++;
         const roles = this.population.getBuildingRoles();
         const roleIds = new Set(roles.keys());
         this.restoreMissingRoleBuildings(roleIds);
@@ -247,6 +266,10 @@ export class CarManager {
         this.toRemove.clear();
       }
     } else if (this.population?.isInitialized() && buildings && buildings.length > 0) {
+      const indexed = this.graph.getIndexedBuildings();
+      if (this.population.expandRoles(indexed)) {
+        this.rolesVersion++;
+      }
       const roles = this.population.getBuildingRoles();
       const roleIds = new Set(roles.keys());
       this.restoreMissingRoleBuildings(roleIds);
@@ -254,7 +277,7 @@ export class CarManager {
       this.saveRoleParkings();
     }
 
-    this.graphBusy = false;
+    if (gen === this.graphGeneration) this.graphBusy = false;
 
     // Fix driving cars with stale destinations (building lost from index)
     for (const car of this.cars) {
@@ -302,15 +325,6 @@ export class CarManager {
         car.hiddenTimer = 0;
         car.mesh.visible = true;
         this.setOccupantsInCar(car);
-        if (car.state === 'parked' && car.activity) {
-          this.progressBars?.create(
-            car.id,
-            car.mesh.position.x,
-            car.mesh.position.y,
-            car.mesh.position.z,
-            car.activity
-          );
-        }
       }
 
       if (car.state === 'driving' && dist > ROAD_TOLERANCE * 2 && rerouted < 5) {
@@ -404,8 +418,6 @@ export class CarManager {
       isDropoffTrip: false,
       householdId: -1,
       activity: null,
-      dwellRemaining: 0,
-      dwellTotal: 0,
       originBuildingId: null,
       destinationBuildingId: null,
       originMarker: null,
@@ -415,6 +427,8 @@ export class CarManager {
       hidden: false,
       hiddenTimer: 0,
       hideGraceTimer: 0,
+      dwellTimer: 0,
+      hasGroceries: false,
     };
 
     this.assignRoute(car, startNode);
@@ -469,8 +483,6 @@ export class CarManager {
       isDropoffTrip: false,
       householdId,
       activity: null,
-      dwellRemaining: 0,
-      dwellTotal: 0,
       originBuildingId: household.buildingId,
       destinationBuildingId: null,
       originMarker: null,
@@ -480,12 +492,13 @@ export class CarManager {
       hidden: false,
       hiddenTimer: 0,
       hideGraceTimer: 0,
+      dwellTimer: 0,
+      hasGroceries: false,
     };
 
     // Use trip planner for first destination (no lastActivity on first trip)
     const trip = this.tripPlanner.pickNextTrip(car.occupantIds, this.population, driverId, null);
     car.activity = trip.activity;
-    car.dwellTotal = trip.dwellTime;
 
     this.assignRouteToBuilding(car, trip.buildingId, homeDest.nodeId);
     if (car.waypoints.length < 2) {
@@ -509,11 +522,16 @@ export class CarManager {
       car.routeMesh = null;
     }
     this.removeRouteMarkers(car);
-    this.progressBars?.remove(car.id);
     this.selectedCarIds.delete(car.id);
     car.selected = false;
     if (car.householdId !== -1 && this.population) {
       this.population.markHouseholdCarActive(car.householdId, false);
+      // Deliver groceries even if car is removed mid-trip
+      if (car.hasGroceries) {
+        const household = this.population.households.get(car.householdId);
+        if (household) household.foodSupply = Math.min(100, household.foodSupply + 70);
+        car.hasGroceries = false;
+      }
       // Return all occupants home
       const household = this.population.households.get(car.householdId);
       if (household) {
@@ -538,10 +556,11 @@ export class CarManager {
 
     for (let attempt = 0; attempt < 3; attempt++) {
       const dest = this.graph.getRandomBuildingDestination();
+      if (!dest && car.householdId !== -1) continue;
       const end = dest ? dest.nodeId : this.graph.getRandomCarNode();
       if (end === null || end === start) continue;
 
-      const nodePath = this.graph.dijkstra(start, end);
+      const nodePath = this.graph.aStar(start, end);
       if (!nodePath || nodePath.length < 2) continue;
 
       const waypoints = this.graph.getRouteWaypointsWithOffset(nodePath, true);
@@ -579,7 +598,9 @@ export class CarManager {
 
       car.roadType = types[0] ?? 'residential';
       const weight = SPEED_WEIGHTS[car.roadType] ?? 0.5;
-      car.speed = BASE_SPEED * weight;
+      const drvPerson = car.occupantIds[0] != null ? this.population?.people.get(car.occupantIds[0]) : null;
+      const spdMult = drvPerson ? PERSONALITY_CONFIG[drvPerson.personality].speedMult : 1.0;
+      car.speed = BASE_SPEED * weight * spdMult;
 
       if (car.selected) {
         car.routeMesh = this.createRouteMesh(waypoints);
@@ -605,13 +626,15 @@ export class CarManager {
     const dest = this.graph.getBuildingDestination(buildingId);
     if (!dest) {
       car.destinationBuildingId = null;
+      car.waypoints = [];
       this.assignRoute(car, start);
       return;
     }
 
-    const nodePath = this.graph.dijkstra(start, dest.nodeId);
+    const nodePath = this.graph.aStar(start, dest.nodeId);
     if (!nodePath || nodePath.length < 2) {
       car.destinationBuildingId = null;
+      car.waypoints = [];
       this.assignRoute(car, start);
       return;
     }
@@ -619,6 +642,7 @@ export class CarManager {
     const waypoints = this.graph.getRouteWaypointsWithOffset(nodePath, true);
     if (waypoints.length < 2) {
       car.destinationBuildingId = null;
+      car.waypoints = [];
       this.assignRoute(car, start);
       return;
     }
@@ -649,7 +673,9 @@ export class CarManager {
     const types = this.graph.getRouteRoadTypes(nodePath);
     car.roadType = types[0] ?? 'residential';
     const weight = SPEED_WEIGHTS[car.roadType] ?? 0.5;
-    car.speed = BASE_SPEED * weight;
+    const drvPerson = car.occupantIds[0] != null ? this.population?.people.get(car.occupantIds[0]) : null;
+    const spdMult = drvPerson ? PERSONALITY_CONFIG[drvPerson.personality].speedMult : 1.0;
+    car.speed = BASE_SPEED * weight * spdMult;
 
     if (car.selected) {
       car.routeMesh = this.createRouteMesh(waypoints);
@@ -662,7 +688,7 @@ export class CarManager {
   private parkCar(car: Car) {
     car.state = 'parked';
     car.originBuildingId = car.destinationBuildingId;
-    car.dwellRemaining = car.dwellTotal;
+    car.dwellTimer = car.activity === 'supermarket' ? SUPERMARKET_DWELL : 0;
 
     if (import.meta.env.DEV && this.population?.isInitialized() && car.destinationBuildingId !== null) {
       const roles = this.population!.getBuildingRoles();
@@ -715,27 +741,39 @@ export class CarManager {
       }
     }
 
+    // Deduct wallet on arrival at paid buildings (actual subtype cost)
+    if (this.population && car.destinationBuildingId !== null) {
+      const driverId = car.occupantIds[0];
+      const driver = driverId != null ? this.population.people.get(driverId) : null;
+      if (driver) {
+        if (car.activity === 'restaurant') {
+          const subtype = this.population.restaurantSubtypes.get(car.destinationBuildingId) ?? 'fast_food';
+          driver.wallet = Math.max(0, driver.wallet - RESTAURANT_COSTS[subtype]);
+        } else if (car.activity === 'mall') {
+          const subtype = this.population.mallSubtypes.get(car.destinationBuildingId) ?? 'mall';
+          driver.wallet = Math.max(0, driver.wallet - MALL_COSTS[subtype]);
+        } else if (car.activity === 'supermarket') {
+          driver.wallet = Math.max(0, driver.wallet - SUPERMARKET_COST);
+        }
+      }
+    }
+
+    // Grocery restock on home arrival
+    if (car.activity === 'home' && car.hasGroceries && this.population) {
+      const household = this.population.households.get(car.householdId);
+      if (household) {
+        household.foodSupply = Math.min(100, household.foodSupply + 70);
+      }
+      car.hasGroceries = false;
+    }
+
     // Pick up guests at social destinations
     if (car.activity === 'social' && car.guestOccupantIds.length === 0 && this.population && car.destinationBuildingId !== null) {
       this.pickupSocialGuests(car);
     }
-
-    // Create progress bar
-    if (this.progressBars && car.activity) {
-      this.progressBars.create(
-        car.id,
-        car.mesh.position.x,
-        car.mesh.position.y,
-        car.mesh.position.z,
-        car.activity
-      );
-    }
   }
 
   private unparkCar(car: Car) {
-    // Remove progress bar
-    this.progressBars?.remove(car.id);
-
     // Set occupants back to car location
     if (this.population) {
       for (const pid of car.occupantIds) {
@@ -803,8 +841,6 @@ export class CarManager {
     car.activity = 'social';
     car.originBuildingId = car.destinationBuildingId;
     car.destinationBuildingId = nextStop.buildingId;
-    car.dwellTotal = DROPOFF_DWELL;
-    car.dwellRemaining = 0;
 
     this.assignRouteToBuilding(car, nextStop.buildingId);
     if (car.waypoints.length < 2) {
@@ -911,8 +947,6 @@ export class CarManager {
     car.activity = trip.activity;
     car.originBuildingId = car.destinationBuildingId;
     car.destinationBuildingId = null;
-    car.dwellTotal = trip.dwellTime;
-    car.dwellRemaining = 0;
 
     this.assignRouteToBuilding(car, trip.buildingId);
     if (car.waypoints.length < 2) {
@@ -942,7 +976,9 @@ export class CarManager {
   private restoreMissingRoleBuildings(roleIds: Set<number>): void {
     for (const [buildingId, saved] of this.savedRoleParkings) {
       if (!roleIds.has(buildingId)) continue;
-      if (this.graph.getBuildingDestination(buildingId)) continue;
+      // Always call restoreBuilding -- even for buildings already in the graph.
+      // The existing-branch patches roadName if a rebuild re-snapped the building
+      // to a different unnamed road, which would otherwise show "Unknown street".
       this.graph.restoreBuilding(buildingId, saved);
     }
   }
@@ -1134,19 +1170,28 @@ export class CarManager {
       destinationBuildingId: c.destinationBuildingId,
       householdId: c.householdId,
       activity: c.activity,
-      dwellTotal: c.dwellTotal,
-      dwellRemaining: c.dwellRemaining,
       speed: c.speed,
       occupantIds: [...c.occupantIds],
       guestOccupantIds: [...c.guestOccupantIds],
       pendingDropoffs: c.pendingDropoffs.length,
       isDropoffTrip: c.isDropoffTrip,
       hidden: c.hidden,
+      originRoadName: c.originBuildingId !== null
+        ? (this.graph.getBuildingRoadName(c.originBuildingId) ?? this.savedRoleParkings.get(c.originBuildingId)?.roadName ?? null)
+        : null,
+      destinationRoadName: c.destinationBuildingId !== null
+        ? (this.graph.getBuildingRoadName(c.destinationBuildingId) ?? this.savedRoleParkings.get(c.destinationBuildingId)?.roadName ?? null)
+        : null,
+      segmentProgress: c.progress,
     }));
   }
 
   getIndexedBuildingIds(): Set<number> {
     return new Set(this.graph.getIndexedBuildings().map(b => b.buildingId));
+  }
+
+  getSavedRoleParkingIds(): Set<number> {
+    return new Set(this.savedRoleParkings.keys());
   }
 
   setParkingDebug(show: boolean) {
@@ -1174,7 +1219,9 @@ export class CarManager {
     const roleMats: Record<string, THREE.LineBasicMaterial> = {
       home: new THREE.LineBasicMaterial({ color: 0x8BC34A }),
       work: new THREE.LineBasicMaterial({ color: 0x64B5F6 }),
-      shopping: new THREE.LineBasicMaterial({ color: 0xFFB74D }),
+      mall: new THREE.LineBasicMaterial({ color: 0xFFB74D }),
+      restaurant: new THREE.LineBasicMaterial({ color: 0xE57373 }),
+      supermarket: new THREE.LineBasicMaterial({ color: 0xAED581 }),
     };
 
     for (const b of indexed) {
@@ -1240,9 +1287,11 @@ export class CarManager {
         }
       }
       const originAddress = c.originBuildingId !== null
-        ? this.graph.getBuildingRoadName(c.originBuildingId) : null;
+        ? (this.graph.getBuildingRoadName(c.originBuildingId) ?? this.savedRoleParkings.get(c.originBuildingId)?.roadName ?? null)
+        : null;
       const destinationAddress = c.destinationBuildingId !== null
-        ? this.graph.getBuildingRoadName(c.destinationBuildingId) : null;
+        ? (this.graph.getBuildingRoadName(c.destinationBuildingId) ?? this.savedRoleParkings.get(c.destinationBuildingId)?.roadName ?? null)
+        : null;
       return {
         id: c.id,
         color: c.color,
@@ -1255,8 +1304,6 @@ export class CarManager {
         guestOccupants: this.population
           ? c.guestOccupantIds.map(pid => this.population!.getPersonInfo(pid)).filter((p): p is PersonInfo => p !== null)
           : [],
-        dwellProgress: c.dwellTotal > 0 ? 1 - c.dwellRemaining / c.dwellTotal : 0,
-        dwellRemaining: c.dwellRemaining,
         householdId: c.householdId,
         routeProgress: c.state === 'driving' && c.waypoints.length > 1
           ? (c.waypointIndex + c.progress) / (c.waypoints.length - 1)
@@ -1271,7 +1318,7 @@ export class CarManager {
     });
   }
 
-  update(deltaTime: number) {
+  update(deltaTime: number, clock?: SimClock) {
     const toRemove = this.toRemove;
     toRemove.clear();
 
@@ -1292,14 +1339,13 @@ export class CarManager {
           car.hidden = true;
           car.hiddenTimer = 0;
           car.mesh.visible = false;
-          this.progressBars?.remove(car.id);
           this.setOccupantsTraveling(car);
           continue;
         }
       }
 
       if (car.state === 'parked') {
-        this.updateParked(car, deltaTime);
+        this.updateParked(car, deltaTime, clock);
         continue;
       }
 
@@ -1328,7 +1374,12 @@ export class CarManager {
       }
 
       const isFinalSegment = car.waypointIndex === car.waypoints.length - 2;
-      const effectiveSpeed = isFinalSegment ? car.speed * 0.3 : car.speed;
+      let effectiveSpeed = isFinalSegment ? car.speed * 0.3 : car.speed;
+      const drvP = car.occupantIds[0] != null ? this.population?.people.get(car.occupantIds[0]) : null;
+      if (drvP && drvP.needs.hunger.value < PERSONALITY_CONFIG[drvP.personality].hungerThreshold
+          && (car.activity === 'restaurant' || car.activity === 'supermarket' || car.activity === 'home')) {
+        effectiveSpeed *= 1.3;
+      }
       car.progress += (effectiveSpeed * deltaTime) / segLen;
 
       if (car.progress >= 1) {
@@ -1405,7 +1456,7 @@ export class CarManager {
     }
   }
 
-  private updateParked(car: Car, deltaTime: number) {
+  private updateParked(car: Car, deltaTime: number, clock?: SimClock) {
     if (!this.population) return;
     if (this.graphBusy) return;
 
@@ -1419,20 +1470,62 @@ export class CarManager {
       }
     }
 
-    car.dwellRemaining -= deltaTime;
-
-    // Update progress bar
-    if (this.progressBars && car.dwellTotal > 0) {
-      const progress = 1 - car.dwellRemaining / car.dwellTotal;
-      this.progressBars.updateBar(
-        car.id, progress,
-        car.mesh.position.x, car.mesh.position.y, car.mesh.position.z
-      );
+    // Timer-based departure (supermarket, dropoff)
+    if (car.dwellTimer > 0) {
+      car.dwellTimer -= deltaTime;
+      if (car.dwellTimer <= 0) {
+        if (car.activity === 'supermarket') car.hasGroceries = true;
+        car.dwellTimer = 0;
+        this.unparkCar(car);
+        return;
+      }
     }
 
-    if (car.dwellRemaining <= 0) {
-      car.dwellRemaining = 0;
-      this.unparkCar(car);
+    // Shift/need-based departure
+    const driverId = car.occupantIds[0];
+    if (driverId == null || car.dwellTimer > 0 || !car.activity) return;
+
+    const driver = this.population.people.get(driverId);
+    if (!driver) return;
+
+    const hour = clock?.getHour() ?? 12;
+
+    switch (car.activity) {
+      case 'work': {
+        const hungerThreshold = PERSONALITY_CONFIG[driver.personality].hungerThreshold;
+        const shiftOver = isShiftOver(hour, driver.shiftEnd, driver.shiftStart);
+        if (shiftOver || driver.needs.hunger.value < hungerThreshold) {
+          this.unparkCar(car);
+          return;
+        }
+        break;
+      }
+      case 'restaurant':
+      case 'mall':
+      case 'social': {
+        const restores = Object.keys(ACTIVITY_RESTORE[car.activity]) as NeedType[];
+        const allFull = restores.length === 0 || restores.every(n => driver.needs[n]?.value >= 99);
+        if (allFull) {
+          this.unparkCar(car);
+          return;
+        }
+        break;
+      }
+      case 'home': {
+        const nearShift = isNearShiftStart(hour, driver.shiftStart);
+        if (driver.needs.energy.value >= 80 && nearShift) {
+          this.unparkCar(car);
+          return;
+        }
+        // Emergency departure: any non-energy need critically low
+        const criticalNeeds: NeedType[] = ['hunger', 'social', 'fun'];
+        const hasCritical = criticalNeeds.some(n => driver.needs[n].value < 15);
+        if (hasCritical && driver.needs.energy.value >= 30) {
+          this.unparkCar(car);
+          return;
+        }
+        break;
+      }
     }
   }
 

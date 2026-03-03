@@ -1,3 +1,4 @@
+import { memo, useMemo } from 'react';
 import { X } from 'lucide-react';
 import { colorToHex } from '@/components/shared/sim-display';
 import type { MapEngine } from '@/map/engine';
@@ -6,8 +7,10 @@ import type { SimCarInfo } from '@/map/types';
 const ACTIVITY_LABELS: Record<string, string> = {
   home: 'At Home',
   work: 'Working',
-  shopping: 'Shopping',
+  mall: 'At Mall',
   social: 'Socializing',
+  restaurant: 'Eating',
+  supermarket: 'Shopping',
 };
 
 interface RoutePanelProps {
@@ -39,8 +42,8 @@ function LocationRow({ label, color, address, onClick }: {
   );
 }
 
-export function RoutePanel({ engine, cars }: RoutePanelProps) {
-  const selected = cars.filter(c => c.selected);
+export const RoutePanel = memo(function RoutePanel({ engine, cars }: RoutePanelProps) {
+  const selected = useMemo(() => cars.filter(c => c.selected), [cars]);
   if (selected.length === 0) return null;
 
   return (
@@ -107,4 +110,4 @@ export function RoutePanel({ engine, cars }: RoutePanelProps) {
       </div>
     </div>
   );
-}
+});

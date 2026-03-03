@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback, memo } from 'react';
 import { Home } from 'lucide-react';
 import { SidebarSection } from './SidebarSection';
 import { PersonCard } from '@/components/shared/sim-display';
@@ -10,25 +10,23 @@ interface HouseholdsSectionProps {
   households: HouseholdInfo[];
 }
 
-export function HouseholdsSection({ engine, households }: HouseholdsSectionProps) {
+export const HouseholdsSection = memo(function HouseholdsSection({ engine, households }: HouseholdsSectionProps) {
   const [expandedHouseholdId, setExpandedHouseholdId] = useState<number | null>(null);
 
   if (households.length === 0) return null;
 
-  const handleHouseholdClick = (h: HouseholdInfo) => {
-    if (expandedHouseholdId === h.id) {
-      setExpandedHouseholdId(null);
-    } else {
-      setExpandedHouseholdId(h.id);
-      const pos = engine?.getBuildingPosition(h.buildingId);
-      if (pos) engine?.flyToScenePos(pos.x, pos.z);
+  const handleHouseholdClick = useCallback((h: HouseholdInfo) => {
+    setExpandedHouseholdId(prev => prev === h.id ? null : h.id);
+    if (engine) {
+      const pos = engine.getBuildingPosition(h.buildingId);
+      if (pos) engine.flyToScenePos(pos.x, pos.z);
     }
-  };
+  }, [engine]);
 
-  const handlePersonClick = (e: React.MouseEvent, personId: number) => {
+  const handlePersonClick = useCallback((e: React.MouseEvent, personId: number) => {
     e.stopPropagation();
     engine?.flyToPersonLocation(personId);
-  };
+  }, [engine]);
 
   return (
     <SidebarSection icon={<Home className="size-4" />} title="Households" count={households.length}>
@@ -56,6 +54,19 @@ export function HouseholdsSection({ engine, households }: HouseholdsSectionProps
 
               {isExpanded && (
                 <div className="ml-3 mr-2 mt-1 mb-2 space-y-1.5">
+                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                    <span>Food:</span>
+                    <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                      <div
+                        className="h-full rounded-full transition-all"
+                        style={{
+                          width: `${h.foodSupply}%`,
+                          backgroundColor: h.foodSupply > 40 ? '#22c55e' : h.foodSupply > 15 ? '#eab308' : '#ef4444',
+                        }}
+                      />
+                    </div>
+                    <span>{Math.round(h.foodSupply)}</span>
+                  </div>
                   {h.members.map(person => (
                     <PersonCard
                       key={person.id}
@@ -71,4 +82,4 @@ export function HouseholdsSection({ engine, households }: HouseholdsSectionProps
       </div>
     </SidebarSection>
   );
-}
+});

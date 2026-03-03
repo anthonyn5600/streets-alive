@@ -64,7 +64,7 @@ describe('RoadGraph.build', () => {
     expect(dNode).not.toBeNull();
     expect(aNode).not.toBe(dNode);
 
-    const path = graph.dijkstra(aNode, dNode);
+    const path = graph.aStar(aNode, dNode);
     expect(path).not.toBeNull();
     expect(path!.length).toBeGreaterThanOrEqual(3);
   });
@@ -82,7 +82,7 @@ describe('RoadGraph.build', () => {
   });
 });
 
-describe('RoadGraph.dijkstra', () => {
+describe('RoadGraph.aStar', () => {
   it('finds shortest path between connected nodes', () => {
     const graph = new RoadGraph();
     const roads: RoadData[] = [
@@ -99,7 +99,7 @@ describe('RoadGraph.dijkstra', () => {
 
     const start = 0;
     const end = graph.nodes.length - 1;
-    const path = graph.dijkstra(start, end);
+    const path = graph.aStar(start, end);
     expect(path).not.toBeNull();
     expect(path!.length).toBeGreaterThanOrEqual(2);
     expect(path![0]).toBe(start);
@@ -119,7 +119,7 @@ describe('RoadGraph.dijkstra', () => {
       ]),
     ];
     graph.build(roads);
-    const path = graph.dijkstra(0, graph.nodes.length - 1);
+    const path = graph.aStar(0, graph.nodes.length - 1);
     expect(path).toBeNull();
   });
 
@@ -129,7 +129,7 @@ describe('RoadGraph.dijkstra', () => {
       { lat: 34.0522, lng: -118.2437 },
       { lat: 34.0530, lng: -118.2437 },
     ])]);
-    expect(graph.dijkstra(0, 0)).toBeNull();
+    expect(graph.aStar(0, 0)).toBeNull();
   });
 });
 
@@ -144,7 +144,7 @@ describe('RoadGraph.getRouteWaypoints', () => {
       ]),
     ];
     graph.build(roads);
-    const path = graph.dijkstra(0, 1);
+    const path = graph.aStar(0, 1);
     expect(path).not.toBeNull();
     const waypoints = graph.getRouteWaypoints(path!);
     expect(waypoints.length).toBeGreaterThanOrEqual(2);
@@ -178,8 +178,8 @@ describe('one-way edges', () => {
       { lat: 34.0530, lng: -118.2437 },
     ], 'residential', 1)]);
 
-    expect(graph.dijkstra(0, 1)).not.toBeNull();
-    expect(graph.dijkstra(1, 0)).toBeNull();
+    expect(graph.aStar(0, 1)).not.toBeNull();
+    expect(graph.aStar(1, 0)).toBeNull();
   });
 
   it('oneway=-1 creates only reverse edge', () => {
@@ -189,8 +189,8 @@ describe('one-way edges', () => {
       { lat: 34.0530, lng: -118.2437 },
     ], 'residential', -1)]);
 
-    expect(graph.dijkstra(1, 0)).not.toBeNull();
-    expect(graph.dijkstra(0, 1)).toBeNull();
+    expect(graph.aStar(1, 0)).not.toBeNull();
+    expect(graph.aStar(0, 1)).toBeNull();
   });
 
   it('motorway defaults to one-way even when oneway=0', () => {
@@ -200,8 +200,8 @@ describe('one-way edges', () => {
       { lat: 34.0530, lng: -118.2437 },
     ], 'motorway', 0)]);
 
-    expect(graph.dijkstra(0, 1)).not.toBeNull();
-    expect(graph.dijkstra(1, 0)).toBeNull();
+    expect(graph.aStar(0, 1)).not.toBeNull();
+    expect(graph.aStar(1, 0)).toBeNull();
   });
 
   it('oneway=0 on residential creates both edges', () => {
@@ -211,8 +211,8 @@ describe('one-way edges', () => {
       { lat: 34.0530, lng: -118.2437 },
     ], 'residential', 0)]);
 
-    expect(graph.dijkstra(0, 1)).not.toBeNull();
-    expect(graph.dijkstra(1, 0)).not.toBeNull();
+    expect(graph.aStar(0, 1)).not.toBeNull();
+    expect(graph.aStar(1, 0)).not.toBeNull();
   });
 });
 
@@ -285,7 +285,7 @@ describe('RoadGraph.buildBuildingIndex', () => {
     }
   });
 
-  it('parking node is reachable via dijkstra', async () => {
+  it('parking node is reachable via aStar', async () => {
     const graph = new RoadGraph();
     graph.build([
       makeRoad(1, [
@@ -301,7 +301,7 @@ describe('RoadGraph.buildBuildingIndex', () => {
 
     const dest = graph.getBuildingDestination(999);
     if (dest) {
-      const path = graph.dijkstra(0, dest.nodeId);
+      const path = graph.aStar(0, dest.nodeId);
       expect(path).not.toBeNull();
       expect(path![path!.length - 1]).toBe(dest.nodeId);
     }
@@ -339,7 +339,7 @@ describe('RoadGraph.getRouteWaypointsWithOffset', () => {
       { lat: 34.0530, lng: -118.2437 },
     ])]);
 
-    const path = graph.dijkstra(0, 1)!;
+    const path = graph.aStar(0, 1)!;
     const regular = graph.getRouteWaypoints(path);
     const offset = graph.getRouteWaypointsWithOffset(path);
 
@@ -371,7 +371,7 @@ describe('RoadGraph.getRouteRoadTypes', () => {
       ], 'secondary'),
     ]);
 
-    const path = graph.dijkstra(0, graph.nodes.length - 1);
+    const path = graph.aStar(0, graph.nodes.length - 1);
     expect(path).not.toBeNull();
     const types = graph.getRouteRoadTypes(path!);
     expect(types.length).toBe(path!.length - 1);
@@ -480,7 +480,7 @@ describe('turn penalties', () => {
       if (node.z > maxZ) { maxZ = node.z; southNode = node.id; }
     }
 
-    const path = graph.dijkstra(northNode, southNode);
+    const path = graph.aStar(northNode, southNode);
     expect(path).not.toBeNull();
     // Straight-through should be the direct path (3 nodes: north -> center -> south)
     expect(path!.length).toBe(3);
@@ -500,7 +500,7 @@ describe('turn penalties', () => {
     }
 
     // North -> East requires 90-degree turn at center
-    const path = graph.dijkstra(northNode, eastNode);
+    const path = graph.aStar(northNode, eastNode);
     expect(path).not.toBeNull();
     // Should still find a path despite penalty
     expect(path!.length).toBe(3);
@@ -523,7 +523,7 @@ describe('turn penalties', () => {
     ]);
 
     // c -> a must go through b. Path should still work.
-    const path = graph.dijkstra(0, graph.nodes.length - 1);
+    const path = graph.aStar(0, graph.nodes.length - 1);
     expect(path).not.toBeNull();
   });
 
@@ -540,7 +540,7 @@ describe('turn penalties', () => {
     ]);
 
     // B has only 2 bidirectional neighbors -> not intersection -> no penalty
-    const path = graph.dijkstra(0, graph.nodes.length - 1);
+    const path = graph.aStar(0, graph.nodes.length - 1);
     expect(path).not.toBeNull();
     expect(path!.length).toBe(3); // a -> b -> c, no detour
   });

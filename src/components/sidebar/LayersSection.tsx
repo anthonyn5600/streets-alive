@@ -22,6 +22,14 @@ export function LayersSection({ engine }: LayersSectionProps) {
           />
         </div>
         <div className="flex items-center justify-between">
+          <Label htmlFor="landuse" className="text-xs">Land Use</Label>
+          <Switch
+            id="landuse"
+            defaultChecked
+            onCheckedChange={v => engine?.setLayerVisibility('landuse', v)}
+          />
+        </div>
+        <div className="flex items-center justify-between">
           <Label htmlFor="roads" className="text-xs">Roads</Label>
           <Switch
             id="roads"

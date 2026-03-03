@@ -4,18 +4,143 @@ import { TileManager } from './tiles/manager';
 import { CarManager } from './cars';
 import { PopulationManager } from './simulation/population';
 import { TripPlanner } from './simulation/trip-planner';
-import { ProgressBarManager } from './simulation/progress-bar';
 import { RuntimeTestRunner } from './simulation/runtime-test-runner';
+import { SimClock } from './simulation/clock';
 import { setCenter, project, unproject } from './projection';
 import { openTileCache, evictOldTiles, evictExcessTiles } from './tiles/vector-tiles';
 import { geometryCache, openGeometryCache, evictOldGeometry, evictExcessGeometry } from './tiles/geometry-cache';
 import { materialPool } from './materials';
 import type { SimCarInfo, HouseholdInfo, MapState, LatLng, RuntimeTestResult, BBox, RoadData, TileKey, BuildingData } from './types';
-import type { BuildingRole } from './simulation/population';
 
 const _clickNdc = new THREE.Vector2();
 
-function createScene(): THREE.Scene {
+interface SkyKeyframe {
+  hour: number;
+  sky: number;
+  fog: number;
+  sunIntensity: number;
+  sunColor: number;
+  ambientIntensity: number;
+  hemiIntensity: number;
+  moonOpacity: number;
+}
+
+// Keyframes define the sky at specific hours; engine lerps between adjacent pairs
+const SKY_KEYFRAMES: SkyKeyframe[] = [
+  { hour: 0,  sky: 0x0a1628, fog: 0x0a1628, sunIntensity: 0.0, sunColor: 0x4466aa, ambientIntensity: 0.15, hemiIntensity: 0.05, moonOpacity: 1.0 },
+  { hour: 5,  sky: 0x0a1628, fog: 0x0a1628, sunIntensity: 0.0, sunColor: 0x4466aa, ambientIntensity: 0.15, hemiIntensity: 0.05, moonOpacity: 1.0 },
+  { hour: 6,  sky: 0x4a3060, fog: 0x3a2848, sunIntensity: 0.3, sunColor: 0xff8844, ambientIntensity: 0.2,  hemiIntensity: 0.1,  moonOpacity: 0.4 },
+  { hour: 7,  sky: 0xf0a060, fog: 0xe89050, sunIntensity: 0.8, sunColor: 0xffaa66, ambientIntensity: 0.3,  hemiIntensity: 0.2,  moonOpacity: 0.0 },
+  { hour: 8,  sky: 0xd4e6f1, fog: 0xd4e6f1, sunIntensity: 1.2, sunColor: 0xffffff, ambientIntensity: 0.4,  hemiIntensity: 0.3,  moonOpacity: 0.0 },
+  { hour: 17, sky: 0xd4e6f1, fog: 0xd4e6f1, sunIntensity: 1.2, sunColor: 0xffffff, ambientIntensity: 0.4,  hemiIntensity: 0.3,  moonOpacity: 0.0 },
+  { hour: 18, sky: 0xf0a060, fog: 0xe89050, sunIntensity: 0.8, sunColor: 0xffaa66, ambientIntensity: 0.3,  hemiIntensity: 0.2,  moonOpacity: 0.0 },
+  { hour: 19, sky: 0x4a3060, fog: 0x3a2848, sunIntensity: 0.3, sunColor: 0xff6644, ambientIntensity: 0.2,  hemiIntensity: 0.1,  moonOpacity: 0.4 },
+  { hour: 20, sky: 0x0a1628, fog: 0x0a1628, sunIntensity: 0.0, sunColor: 0x4466aa, ambientIntensity: 0.15, hemiIntensity: 0.05, moonOpacity: 1.0 },
+  { hour: 24, sky: 0x0a1628, fog: 0x0a1628, sunIntensity: 0.0, sunColor: 0x4466aa, ambientIntensity: 0.15, hemiIntensity: 0.05, moonOpacity: 1.0 },
+];
+
+const _skyA = new THREE.Color();
+const _skyB = new THREE.Color();
+
+function lerpSky(hour: number): { sky: THREE.Color; fog: THREE.Color; sunIntensity: number; sunColor: THREE.Color; ambientIntensity: number; hemiIntensity: number; moonOpacity: number } {
+  let i = 0;
+  while (i < SKY_KEYFRAMES.length - 1 && SKY_KEYFRAMES[i + 1].hour <= hour) i++;
+  const a = SKY_KEYFRAMES[i];
+  const b = SKY_KEYFRAMES[Math.min(i + 1, SKY_KEYFRAMES.length - 1)];
+  const range = b.hour - a.hour;
+  const t = range > 0 ? (hour - a.hour) / range : 0;
+
+  return {
+    sky: _skyA.set(a.sky).lerp(_skyB.set(b.sky), t).clone(),
+    fog: _skyA.set(a.fog).lerp(_skyB.set(b.fog), t).clone(),
+    sunIntensity: a.sunIntensity + (b.sunIntensity - a.sunIntensity) * t,
+    sunColor: _skyA.set(a.sunColor).lerp(_skyB.set(b.sunColor), t).clone(),
+    ambientIntensity: a.ambientIntensity + (b.ambientIntensity - a.ambientIntensity) * t,
+    hemiIntensity: a.hemiIntensity + (b.hemiIntensity - a.hemiIntensity) * t,
+    moonOpacity: a.moonOpacity + (b.moonOpacity - a.moonOpacity) * t,
+  };
+}
+
+interface SceneLights {
+  sun: THREE.DirectionalLight;
+  ambient: THREE.AmbientLight;
+  hemi: THREE.HemisphereLight;
+  moon: THREE.Sprite;
+  moonMaterial: THREE.SpriteMaterial;
+}
+
+function createMoonTexture(): THREE.CanvasTexture {
+  const size = 512;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const cx = size / 2, cy = size / 2;
+
+  // Outer glow (fills the full canvas, fades to transparent)
+  const glowR = size * 0.48;
+  const moonR = size * 0.22;
+  const glow = ctx.createRadialGradient(cx, cy, moonR, cx, cy, glowR);
+  glow.addColorStop(0, 'rgba(210, 208, 190, 0.18)');
+  glow.addColorStop(0.4, 'rgba(190, 188, 170, 0.06)');
+  glow.addColorStop(0.7, 'rgba(170, 168, 155, 0.02)');
+  glow.addColorStop(1, 'rgba(150, 148, 140, 0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, size, size);
+
+  // Moon disc — off-center highlight for 3D illusion
+  const disc = ctx.createRadialGradient(cx - moonR * 0.15, cy - moonR * 0.15, 0, cx, cy, moonR);
+  disc.addColorStop(0, '#f5f0e0');
+  disc.addColorStop(0.4, '#ebe5d0');
+  disc.addColorStop(0.75, '#d8d0b8');
+  disc.addColorStop(0.95, '#c0b898');
+  disc.addColorStop(1, 'rgba(160, 152, 120, 0)');
+  ctx.fillStyle = disc;
+  ctx.beginPath();
+  ctx.arc(cx, cy, moonR * 1.05, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Maria (dark patches)
+  const maria = [
+    { x: 0.44, y: 0.42, r: 0.06, a: 0.18 },
+    { x: 0.52, y: 0.48, r: 0.08, a: 0.14 },
+    { x: 0.46, y: 0.54, r: 0.04, a: 0.12 },
+    { x: 0.56, y: 0.43, r: 0.035, a: 0.10 },
+    { x: 0.42, y: 0.50, r: 0.05, a: 0.12 },
+  ];
+  for (const m of maria) {
+    const mg = ctx.createRadialGradient(m.x * size, m.y * size, 0, m.x * size, m.y * size, m.r * size);
+    mg.addColorStop(0, `rgba(90, 80, 60, ${m.a})`);
+    mg.addColorStop(1, 'rgba(90, 80, 60, 0)');
+    ctx.fillStyle = mg;
+    ctx.fillRect(0, 0, size, size);
+  }
+
+  // Craters
+  const craters = [
+    { x: 0.45, y: 0.40, r: 0.012 }, { x: 0.54, y: 0.52, r: 0.010 },
+    { x: 0.50, y: 0.56, r: 0.008 }, { x: 0.57, y: 0.46, r: 0.007 },
+    { x: 0.43, y: 0.53, r: 0.009 }, { x: 0.48, y: 0.44, r: 0.006 },
+  ];
+  for (const c of craters) {
+    const px = c.x * size, py = c.y * size, pr = c.r * size;
+    ctx.beginPath();
+    ctx.arc(px, py, pr, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(70, 65, 50, 0.18)';
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(px + pr * 0.3, py + pr * 0.3, pr * 0.8, 0, Math.PI * 2);
+    ctx.strokeStyle = 'rgba(255, 250, 230, 0.10)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+  }
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function createScene(): { scene: THREE.Scene; lights: SceneLights } {
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0xd4e6f1);
   scene.fog = new THREE.Fog(0xd4e6f1, 2000, 8000);
@@ -31,20 +156,27 @@ function createScene(): THREE.Scene {
   const hemi = new THREE.HemisphereLight(0xb1e1ff, 0xb97a20, 0.3);
   scene.add(hemi);
 
-  const groundGeom = new THREE.PlaneGeometry(30000, 30000);
-  const groundMat = new THREE.MeshLambertMaterial({
-    color: 0xe8e6e0,
-    polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 1,
+  const moonTexture = createMoonTexture();
+  const moonMaterial = new THREE.SpriteMaterial({
+    map: moonTexture,
+    transparent: true,
+    opacity: 0,
+    fog: false,
+    depthWrite: false,
   });
-  const ground = new THREE.Mesh(groundGeom, groundMat);
+  const moon = new THREE.Sprite(moonMaterial);
+  moon.scale.set(350, 350, 1);
+  moon.renderOrder = -1;
+  scene.add(moon);
+
+  const groundGeom = new THREE.PlaneGeometry(30000, 30000);
+  const ground = new THREE.Mesh(groundGeom, materialPool.getGround());
   ground.rotation.x = -Math.PI / 2;
   ground.position.y = 0;
   ground.name = 'ground';
   scene.add(ground);
 
-  return scene;
+  return { scene, lights: { sun, ambient, hemi, moon, moonMaterial } };
 }
 
 export class MapEngine {
@@ -55,8 +187,9 @@ export class MapEngine {
   private carManager!: CarManager;
   private populationManager!: PopulationManager;
   private tripPlanner!: TripPlanner;
-  private progressBarManager!: ProgressBarManager;
   private testRunner!: RuntimeTestRunner;
+  private clock!: SimClock;
+  private lights!: SceneLights;
   private animationId: number | null = null;
   private canvas!: HTMLCanvasElement;
   private onStateChange: ((state: MapState) => void) | null = null;
@@ -65,10 +198,11 @@ export class MapEngine {
   private onCarStateChangeCallback: ((cars: SimCarInfo[]) => void) | null = null;
   private onHouseholdChangeCallback: ((households: HouseholdInfo[]) => void) | null = null;
   private onTestResultsCallback: ((results: RuntimeTestResult[]) => void) | null = null;
+  private onSimTimeChangeCallback: ((time: string) => void) | null = null;
   private disposed = false;
   private lastFrameTime = 0;
   private raycaster = new THREE.Raycaster();
-  private buildingColorsApplied = false;
+  private lastRolesVersion = 0;
   private graphRebuildTimer: ReturnType<typeof setTimeout> | null = null;
   private evictionIntervalId: ReturnType<typeof setInterval> | null = null;
   private persistentRoadData = new Map<TileKey, RoadData[]>();
@@ -95,7 +229,9 @@ export class MapEngine {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 
     // Scene
-    this.scene = createScene();
+    const { scene, lights } = createScene();
+    this.scene = scene;
+    this.lights = lights;
 
     // Camera
     this.cameraController = new MapCameraController(canvas, width, height);
@@ -120,16 +256,17 @@ export class MapEngine {
 
     // Car manager
     this.carManager = new CarManager(this.scene);
-    // Progress bar manager
-    this.progressBarManager = new ProgressBarManager(this.scene);
 
     // Runtime test runner
     this.testRunner = new RuntimeTestRunner();
     this.testRunner.setOnResults((results) => this.onTestResultsCallback?.(results));
 
+    // Simulation clock (start at 8 AM = 28800 sim-seconds)
+    this.clock = new SimClock();
+    this.clock.simTime = 28800;
+
     this.carManager.population = this.populationManager;
     this.carManager.tripPlanner = this.tripPlanner;
-    this.carManager.progressBars = this.progressBarManager;
     this.carManager.onCarStateChange = (cars) => {
       this.onCarStateChangeCallback?.(cars);
       if (this.onHouseholdChangeCallback && this.populationManager.isInitialized()) {
@@ -161,6 +298,9 @@ export class MapEngine {
     canvas.addEventListener('mousemove', this.handleMouseMove);
     // Click for car selection
     canvas.addEventListener('click', this.handleClick);
+
+    // Initialize sky to match clock
+    this.updateDayNight(this.clock.getHourFraction());
 
     // Start render loop
     this.animate();
@@ -210,6 +350,10 @@ export class MapEngine {
 
   setOnTestResults(cb: (results: RuntimeTestResult[]) => void) {
     this.onTestResultsCallback = cb;
+  }
+
+  setOnSimTimeChange(cb: (time: string) => void) {
+    this.onSimTimeChangeCallback = cb;
   }
 
   selectCarById(id: number) {
@@ -312,8 +456,8 @@ export class MapEngine {
       }
     }
 
-    if (!this.buildingColorsApplied && this.populationManager.isInitialized()) {
-      this.buildingColorsApplied = true;
+    if (this.populationManager.isInitialized() && this.carManager.rolesVersion !== this.lastRolesVersion) {
+      this.lastRolesVersion = this.carManager.rolesVersion;
       this.applyBuildingColors();
     }
   }
@@ -346,18 +490,28 @@ export class MapEngine {
   }
 
   private applyBuildingColors() {
-    const ROLE_COLORS: Record<BuildingRole, THREE.Color> = {
-      home: new THREE.Color(0x8BC34A),
-      work: new THREE.Color(0x64B5F6),
-      shopping: new THREE.Color(0xFFB74D),
-    };
-
-    const roles = this.populationManager.getBuildingRoles();
+    const profColors = this.populationManager.getBuildingColors();
     const colorMap = new Map<number, THREE.Color>();
-    for (const [buildingId, role] of roles) {
-      colorMap.set(buildingId, ROLE_COLORS[role]);
+    for (const [buildingId, hex] of profColors) {
+      colorMap.set(buildingId, new THREE.Color(hex));
     }
     this.tileManager.setBuildingColorMap(colorMap);
+  }
+
+  private updateDayNight(hour: number) {
+    const sky = lerpSky(hour);
+    (this.scene.background as THREE.Color).copy(sky.sky);
+    (this.scene.fog as THREE.Fog).color.copy(sky.fog);
+    this.lights.sun.intensity = sky.sunIntensity;
+    this.lights.sun.color.copy(sky.sunColor);
+    this.lights.ambient.intensity = sky.ambientIntensity;
+    this.lights.hemi.intensity = sky.hemiIntensity;
+    this.lights.moonMaterial.opacity = sky.moonOpacity;
+    this.lights.moon.visible = sky.moonOpacity > 0.01;
+    if (this.lights.moon.visible) {
+      // Fixed position high in the sky, offset from map center
+      this.lights.moon.position.set(2000, 3000, -2000);
+    }
   }
 
   private animate = () => {
@@ -370,11 +524,14 @@ export class MapEngine {
 
     this.tileManager.drainMeshQueue();
     this.cameraController.update();
+    const timeChanged = this.clock.update(deltaTime);
+    if (timeChanged) {
+      this.onSimTimeChangeCallback?.(this.clock.formatFull());
+      this.updateDayNight(this.clock.getHourFraction());
+    }
     this.populationManager.updateNeeds(deltaTime);
-    this.carManager.update(deltaTime);
+    this.carManager.update(deltaTime, this.clock);
     this.testRunner.update(deltaTime, this.carManager, this.populationManager);
-    this.progressBarManager.update(this.cameraController.camera);
-
     const target = this.cameraController.controls.target;
     const camDist = this.cameraController.camera.position.distanceTo(target);
     materialPool.updateBuildingFlatten(target.x, target.z, camDist * 1.0, camDist * 3.0);
@@ -409,7 +566,7 @@ export class MapEngine {
     });
   }
 
-  setLayerVisibility(layer: 'buildings' | 'roads' | 'labels', visible: boolean) {
+  setLayerVisibility(layer: 'buildings' | 'roads' | 'labels' | 'landuse', visible: boolean) {
     this.tileManager.setLayerVisibility(layer, visible);
   }
 
@@ -466,7 +623,8 @@ export class MapEngine {
     }
     this.canvas.removeEventListener('mousemove', this.handleMouseMove);
     this.canvas.removeEventListener('click', this.handleClick);
-    this.progressBarManager.dispose();
+    this.lights.moonMaterial.map?.dispose();
+    this.lights.moonMaterial.dispose();
     this.carManager.dispose();
     this.tileManager.dispose();
     this.persistentRoadData.clear();

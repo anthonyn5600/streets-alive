@@ -8,7 +8,7 @@ import {
   HIGHWAY_MASK_EXTRA,
   HIGHWAY_SHADOW_EXTRA,
 } from '../roads/style';
-import type { BuildingData, RoadData } from '../types';
+import type { BuildingData, LandUseData, RoadData } from '../types';
 import type {
   CachedBuildingArrays,
   CachedRoadArrays,
@@ -554,11 +554,79 @@ function computeLabels(
   return placements;
 }
 
+// --- Land use geometry ---
+
+const LAND_USE_COLORS: Record<string, number> = {
+  park: 0x9cc07a,
+  forest: 0x7aab5e,
+  grass: 0xb5d89a,
+  wood: 0x7aab5e,
+  water: 0x7ab8d4,
+  lake: 0x7ab8d4,
+  river: 0x7ab8d4,
+  reservoir: 0x7ab8d4,
+  scrub: 0xc4c98a,
+  farmland: 0xd4d49a,
+  residential: 0xddd8d0,
+};
+
+const LAND_USE_Y = 0.02;
+
+function buildLandUseArrays(
+  landUse: LandUseData[],
+  proj: ProjConstants
+): CachedColoredRoadLayer[] {
+  const colorBuckets = new Map<number, ArrayBucket>();
+
+  for (const lu of landUse) {
+    const color = LAND_USE_COLORS[lu.class];
+    if (color === undefined) continue;
+
+    const poly = lu.polygon;
+    if (poly.length < 4) continue;
+
+    const projected: Array<{ x: number; z: number }> = [];
+    for (let i = 0; i < poly.length - 1; i++) {
+      projected.push(projectPure(poly[i].lat, poly[i].lng, proj));
+    }
+    if (projected.length < 3) continue;
+
+    let triIndices: number[];
+    if (isConvex(projected)) {
+      triIndices = fanTriangulate(projected.length);
+    } else {
+      const flatCoords: number[] = [];
+      for (const p of projected) {
+        flatCoords.push(p.x, p.z);
+      }
+      triIndices = earcut(flatCoords, undefined, 2);
+    }
+    if (triIndices.length === 0) continue;
+
+    if (!colorBuckets.has(color)) colorBuckets.set(color, newBucket());
+    const bucket = colorBuckets.get(color)!;
+    const base = bucket.vertexCount;
+
+    for (const p of projected) {
+      bucket.positions.push(p.x, LAND_USE_Y, p.z);
+    }
+
+    for (const idx of triIndices) {
+      bucket.indices.push(base + idx);
+    }
+
+    bucket.vertexCount += projected.length;
+  }
+
+  return colorBucketsToLayers(colorBuckets);
+}
+
 // --- Worker message handler ---
 
 function collectTransferables(
   buildings: CachedBuildingArrays | null,
-  roads: CachedRoadArrays
+  roads: CachedRoadArrays,
+  landUse: CachedColoredRoadLayer[]
 ): ArrayBuffer[] {
   const buffers = new Set<ArrayBuffer>();
 
@@ -592,6 +660,8 @@ function collectTransferables(
   addLayer(roads.hwCenterLine);
   addLayer(roads.onewayArrows);
 
+  addColoredLayers(landUse);
+
   return Array.from(buffers);
 }
 
@@ -606,6 +676,7 @@ self.onmessage = (e: MessageEvent) => {
       decodeOnly: true,
       decodedBuildings: decoded.buildings,
       decodedRoads: decoded.roads,
+      decodedLandUse: decoded.landUse,
     });
     return;
   }
@@ -613,8 +684,9 @@ self.onmessage = (e: MessageEvent) => {
   const buildingArrays = buildBuildingArrays(decoded.buildings, projection, buildingColor);
   const roadArrays = buildRoadArrays(decoded.roads, zoomLevel, projection);
   const labelPlacements = computeLabels(decoded.roads, zoomLevel, projection);
+  const landUseArrays = buildLandUseArrays(decoded.landUse, projection);
 
-  const transferables = collectTransferables(buildingArrays, roadArrays);
+  const transferables = collectTransferables(buildingArrays, roadArrays, landUseArrays);
 
   (self as unknown as Worker).postMessage(
     {
@@ -622,8 +694,10 @@ self.onmessage = (e: MessageEvent) => {
       buildings: buildingArrays,
       roads: roadArrays,
       labelPlacements,
+      landUse: landUseArrays,
       decodedBuildings: decoded.buildings,
       decodedRoads: decoded.roads,
+      decodedLandUse: decoded.landUse,
     },
     transferables
   );

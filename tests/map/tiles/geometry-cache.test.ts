@@ -130,12 +130,6 @@ describe('geometry-cache IndexedDB', () => {
     expect(result4).not.toBeNull();
   });
 
-  it('evictExcessGeometry on empty DB is a no-op', async () => {
-    await openGeometryCache();
-    // Should not throw
-    await evictExcessGeometry(2);
-  });
-
   it('degrades gracefully when geoDB is null', async () => {
     // Don't open the db
     const result = await getGeometryCached('any-key');

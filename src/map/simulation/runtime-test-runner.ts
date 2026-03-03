@@ -55,8 +55,11 @@ export class RuntimeTestRunner {
         };
       }),
       indexedBuildingIds: carManager.getIndexedBuildingIds(),
+      savedRoleParkingIds: carManager.getSavedRoleParkingIds(),
       buildingRoleIds: new Set(population.getBuildingRoles().keys()),
-      shoppingBuildingCount: population.shoppingBuildingIds.size,
+      mallBuildingCount: population.mallBuildingIds.size,
+      restaurantBuildingCount: population.restaurantBuildingIds.size,
+      supermarketBuildingCount: population.supermarketBuildingIds.size,
       populationInitialized: population.isInitialized(),
     };
   }

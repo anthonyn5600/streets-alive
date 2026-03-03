@@ -1,7 +1,7 @@
-import type { NeedType, ActivityType, JobType, Person, Need, Household, PersonInfo, PersonLocation, HouseholdInfo } from '../types';
+import type { NeedType, ActivityType, JobType, Person, Need, Household, PersonInfo, PersonLocation, HouseholdInfo, PersonalityType, WorkplaceType, RestaurantSubtype, MallSubtype } from '../types';
 import type { IndexedBuilding } from '../roads/graph';
 
-export type BuildingRole = 'home' | 'work' | 'shopping';
+export type BuildingRole = 'home' | 'work' | 'mall' | 'restaurant' | 'supermarket';
 
 const FIRST_NAMES = [
   'James', 'Mary', 'Robert', 'Patricia', 'John', 'Jennifer', 'Michael', 'Linda',
@@ -30,20 +30,85 @@ const JOBS: JobType[] = [
 
 const NEED_DECAY: Record<NeedType, number> = {
   energy: 0.5,
+  hunger: 0.3,
   social: 0.3,
-  money: 0.1,
   fun: 0.3,
   health: 0.05,
 };
 
 const ACTIVITY_RESTORE: Record<ActivityType, Partial<Record<NeedType, number>>> = {
-  home: { energy: 2.0, health: 0.5 },
-  work: { money: 1.0 },
-  shopping: { fun: 1.5 },
+  home: { energy: 2.0, health: 0.5, hunger: 1.5 },
+  work: { hunger: 0.5 },
+  mall: { fun: 1.5 },
   social: { social: 1.5, fun: 1.0 },
+  restaurant: { hunger: 2.0 },
+  supermarket: {},
 };
 
-const NEED_TYPES: NeedType[] = ['energy', 'social', 'money', 'fun', 'health'];
+const NEED_TYPES: NeedType[] = ['energy', 'hunger', 'social', 'fun', 'health'];
+
+const RESTAURANT_COSTS: Record<RestaurantSubtype, number> = {
+  fast_food: 8, diner: 15, cafe: 12, fine_dining: 30,
+};
+
+const MALL_COSTS: Record<MallSubtype, number> = {
+  mall: 25, outlet: 15, plaza: 10,
+};
+
+const SUPERMARKET_COST = 20;
+
+const RESTAURANT_SUBTYPES: RestaurantSubtype[] = ['fast_food', 'diner', 'cafe', 'fine_dining'];
+const MALL_SUBTYPES: MallSubtype[] = ['mall', 'outlet', 'plaza'];
+
+function cheapestMealCost(): number {
+  return Math.min(...Object.values(RESTAURANT_COSTS));
+}
+
+function cheapestMallCost(): number {
+  return Math.min(...Object.values(MALL_COSTS));
+}
+
+const JOB_CONFIG: Record<JobType, { workplaceType: WorkplaceType | 'restaurant' | 'mall'; earnRate: number }> = {
+  'Office Worker': { workplaceType: 'office',      earnRate: 3.5 },
+  'Tech':          { workplaceType: 'tech_office',  earnRate: 5.0 },
+  'Healthcare':    { workplaceType: 'clinic',       earnRate: 4.5 },
+  'Teacher':       { workplaceType: 'school',       earnRate: 2.5 },
+  'Construction':  { workplaceType: 'warehouse',    earnRate: 3.0 },
+  'Artist':        { workplaceType: 'studio',       earnRate: 2.0 },
+  'Restaurant':    { workplaceType: 'restaurant',   earnRate: 1.0 },
+  'Retail':        { workplaceType: 'mall',         earnRate: 1.5 },
+};
+
+const PERSONALITY_WEIGHTS: { type: PersonalityType; weight: number }[] = [
+  { type: 'wild', weight: 10 },
+  { type: 'aggressive', weight: 15 },
+  { type: 'normal', weight: 50 },
+  { type: 'cautious', weight: 20 },
+  { type: 'impaired', weight: 5 },
+];
+
+const PERSONALITY_TOTAL_WEIGHT = PERSONALITY_WEIGHTS.reduce((s, p) => s + p.weight, 0);
+
+const PERSONALITY_CONFIG: Record<PersonalityType, {
+  speedMult: number;
+  spendingBias: number;
+  hungerThreshold: number;
+}> = {
+  wild:       { speedMult: 2.0, spendingBias: 1.0, hungerThreshold: 10 },
+  aggressive: { speedMult: 1.5, spendingBias: 0.7, hungerThreshold: 20 },
+  normal:     { speedMult: 1.0, spendingBias: 0.5, hungerThreshold: 20 },
+  cautious:   { speedMult: 0.8, spendingBias: 0.1, hungerThreshold: 40 },
+  impaired:   { speedMult: 0.4, spendingBias: 0.5, hungerThreshold: 10 },
+};
+
+const WORKPLACE_COLORS: Record<WorkplaceType, number> = {
+  office:      0x64B5F6,
+  tech_office: 0x42A5F5,
+  clinic:      0x80DEEA,
+  school:      0x7986CB,
+  warehouse:   0x78909C,
+  studio:      0x9FA8DA,
+};
 
 let nextPersonId = 1;
 let nextHouseholdId = 1;
@@ -54,6 +119,31 @@ function randomRange(min: number, max: number): number {
 
 function randomPick<T>(arr: T[]): T {
   return arr[Math.floor(Math.random() * arr.length)];
+}
+
+function randomPersonality(): PersonalityType {
+  let roll = Math.random() * PERSONALITY_TOTAL_WEIGHT;
+  for (const p of PERSONALITY_WEIGHTS) {
+    roll -= p.weight;
+    if (roll <= 0) return p.type;
+  }
+  return 'normal';
+}
+
+function randomShift(): { start: number; end: number } {
+  const shifts = [
+    { start: 8, end: 17, weight: 60 },
+    { start: 6, end: 14, weight: 15 },
+    { start: 14, end: 22, weight: 15 },
+    { start: 22, end: 6, weight: 10 },
+  ];
+  const total = shifts.reduce((s, sh) => s + sh.weight, 0);
+  let roll = Math.random() * total;
+  for (const sh of shifts) {
+    roll -= sh.weight;
+    if (roll <= 0) return { start: sh.start, end: sh.end };
+  }
+  return { start: 8, end: 17 };
 }
 
 function createNeeds(): Record<NeedType, Need> {
@@ -70,7 +160,14 @@ function createNeeds(): Record<NeedType, Need> {
 export class PopulationManager {
   people = new Map<number, Person>();
   households = new Map<number, Household>();
-  shoppingBuildingIds = new Set<number>();
+  mallBuildingIds = new Set<number>();
+  restaurantBuildingIds = new Set<number>();
+  supermarketBuildingIds = new Set<number>();
+  restaurantSubtypes = new Map<number, RestaurantSubtype>();
+  mallSubtypes = new Map<number, MallSubtype>();
+  buildingProfessions = new Map<number, WorkplaceType | 'restaurant' | 'mall'>();
+  expandedWorkBuildingIds = new Set<number>();
+  private personToHousehold = new Map<number, number>();
   private initialized = false;
 
   init(buildings: IndexedBuilding[]): void {
@@ -111,6 +208,7 @@ export class PopulationManager {
           attempts++;
         }
 
+        const shift = randomShift();
         const person: Person = {
           id: personId,
           name: `${firstName} ${lastName}`,
@@ -119,10 +217,16 @@ export class PopulationManager {
           homeBuildingId: householdBuildingId,
           workBuildingId,
           location: { type: 'home', buildingId: householdBuildingId },
+          wallet: randomRange(30, 80),
+          earnings: 0,
+          personality: randomPersonality(),
+          shiftStart: shift.start,
+          shiftEnd: shift.end,
         };
 
         this.people.set(personId, person);
         memberIds.push(personId);
+        this.personToHousehold.set(personId, householdId);
       }
 
       const household: Household = {
@@ -130,27 +234,153 @@ export class PopulationManager {
         buildingId: householdBuildingId,
         memberIds,
         carActive: false,
+        foodSupply: Math.floor(randomRange(50, 80)),
       };
       this.households.set(householdId, household);
     }
 
-    // Pick 8-12 random buildings as shopping destinations (not homes or workplaces)
+    // Allocate commercial buildings (not homes or workplaces)
     const usedBuildings = new Set<number>();
     for (const h of this.households.values()) usedBuildings.add(h.buildingId);
     for (const p of this.people.values()) usedBuildings.add(p.workBuildingId);
-    const candidateShops = buildingIds.filter(id => !usedBuildings.has(id));
-    const shopCount = Math.floor(randomRange(8, 13));
-    const shuffled = candidateShops.sort(() => Math.random() - 0.5);
-    for (let i = 0; i < Math.min(shopCount, shuffled.length); i++) {
-      this.shoppingBuildingIds.add(shuffled[i]);
+    const candidates = buildingIds.filter(id => !usedBuildings.has(id)).sort(() => Math.random() - 0.5);
+
+    const supermarketCount = Math.floor(randomRange(10, 16));
+    const restaurantCount = Math.floor(randomRange(15, 26));
+    const mallCount = Math.floor(randomRange(5, 8));
+    let ci = 0;
+
+    for (let i = 0; i < supermarketCount && ci < candidates.length; i++, ci++) {
+      this.supermarketBuildingIds.add(candidates[ci]);
     }
-    // If not enough unique candidates, add from all buildings
-    if (this.shoppingBuildingIds.size < shopCount) {
+    for (let i = 0; i < restaurantCount && ci < candidates.length; i++, ci++) {
+      const id = candidates[ci];
+      this.restaurantBuildingIds.add(id);
+      this.restaurantSubtypes.set(id, randomPick(RESTAURANT_SUBTYPES));
+    }
+    for (let i = 0; i < mallCount && ci < candidates.length; i++, ci++) {
+      const id = candidates[ci];
+      this.mallBuildingIds.add(id);
+      this.mallSubtypes.set(id, randomPick(MALL_SUBTYPES));
+    }
+
+    // If not enough unique candidates, backfill from all unused buildings
+    if (ci < supermarketCount + restaurantCount + mallCount) {
       for (const id of buildingIds) {
-        if (this.shoppingBuildingIds.size >= shopCount) break;
-        if (!usedBuildings.has(id)) this.shoppingBuildingIds.add(id);
+        if (usedBuildings.has(id)) continue;
+        if (this.supermarketBuildingIds.has(id) || this.restaurantBuildingIds.has(id) || this.mallBuildingIds.has(id)) continue;
+        if (this.supermarketBuildingIds.size < supermarketCount) {
+          this.supermarketBuildingIds.add(id);
+        } else if (this.restaurantBuildingIds.size < restaurantCount) {
+          this.restaurantBuildingIds.add(id);
+          this.restaurantSubtypes.set(id, randomPick(RESTAURANT_SUBTYPES));
+        } else if (this.mallBuildingIds.size < mallCount) {
+          this.mallBuildingIds.add(id);
+          this.mallSubtypes.set(id, randomPick(MALL_SUBTYPES));
+        } else {
+          break;
+        }
       }
     }
+
+    // Second pass: match workers to profession-appropriate buildings
+    const workersByType = new Map<WorkplaceType | 'restaurant' | 'mall', Person[]>();
+    for (const person of this.people.values()) {
+      const wt = JOB_CONFIG[person.job].workplaceType;
+      let group = workersByType.get(wt);
+      if (!group) { group = []; workersByType.set(wt, group); }
+      group.push(person);
+    }
+
+    // Restaurant workers → work at restaurant buildings
+    const restaurantWorkers = workersByType.get('restaurant') ?? [];
+    const restaurantArr = Array.from(this.restaurantBuildingIds);
+    for (let i = 0; i < restaurantWorkers.length; i++) {
+      if (restaurantArr.length > 0) {
+        const worker = restaurantWorkers[i];
+        let picked = restaurantArr[i % restaurantArr.length];
+        if (picked === worker.homeBuildingId && restaurantArr.length > 1) {
+          picked = restaurantArr[(i + 1) % restaurantArr.length];
+        }
+        worker.workBuildingId = picked;
+      }
+    }
+    for (const id of restaurantArr) this.buildingProfessions.set(id, 'restaurant');
+
+    // Retail workers → work at mall buildings
+    const mallWorkers = workersByType.get('mall') ?? [];
+    const mallArr = Array.from(this.mallBuildingIds);
+    for (let i = 0; i < mallWorkers.length; i++) {
+      if (mallArr.length > 0) {
+        const worker = mallWorkers[i];
+        let picked = mallArr[i % mallArr.length];
+        if (picked === worker.homeBuildingId && mallArr.length > 1) {
+          picked = mallArr[(i + 1) % mallArr.length];
+        }
+        worker.workBuildingId = picked;
+      }
+    }
+    for (const id of mallArr) this.buildingProfessions.set(id, 'mall');
+
+    // Other profession types → allocate dedicated work buildings
+    const professionCandidates = buildingIds.filter(id =>
+      !this.supermarketBuildingIds.has(id) &&
+      !this.restaurantBuildingIds.has(id) &&
+      !this.mallBuildingIds.has(id)
+    ).sort(() => Math.random() - 0.5);
+
+    let pci = 0;
+    const workplaceTypes: WorkplaceType[] = ['office', 'tech_office', 'clinic', 'school', 'warehouse', 'studio'];
+    for (const wt of workplaceTypes) {
+      const workers = workersByType.get(wt) ?? [];
+      if (workers.length === 0) continue;
+      const count = Math.min(Math.floor(randomRange(3, 6)), Math.max(professionCandidates.length - pci, 1));
+      const allocated: number[] = [];
+      for (let i = 0; i < count && pci < professionCandidates.length; i++, pci++) {
+        allocated.push(professionCandidates[pci]);
+        this.buildingProfessions.set(professionCandidates[pci], wt);
+      }
+      if (allocated.length > 0) {
+        for (let i = 0; i < workers.length; i++) {
+          let picked = allocated[i % allocated.length];
+          if (picked === workers[i].homeBuildingId && allocated.length > 1) {
+            picked = allocated[(i + 1) % allocated.length];
+          }
+          workers[i].workBuildingId = picked;
+        }
+      }
+    }
+  }
+
+  expandRoles(buildings: IndexedBuilding[]): boolean {
+    if (!this.initialized) return false;
+    const existingRoles = this.getBuildingRoles();
+    const candidates = buildings.filter(b => !existingRoles.has(b.buildingId) && b.roadName !== '');
+    if (candidates.length === 0) return false;
+
+    let added = false;
+    const MAX_RESTAURANTS = 40;
+    const MAX_SUPERMARKETS = 20;
+    const MAX_MALLS = 10;
+    for (const b of candidates) {
+      const roll = Math.random();
+      if (roll < 0.20) {
+        this.expandedWorkBuildingIds.add(b.buildingId);
+        added = true;
+      } else if (roll < 0.35 && this.restaurantBuildingIds.size < MAX_RESTAURANTS) {
+        this.restaurantBuildingIds.add(b.buildingId);
+        this.restaurantSubtypes.set(b.buildingId, randomPick(RESTAURANT_SUBTYPES));
+        added = true;
+      } else if (roll < 0.45 && this.supermarketBuildingIds.size < MAX_SUPERMARKETS) {
+        this.supermarketBuildingIds.add(b.buildingId);
+        added = true;
+      } else if (roll < 0.48 && this.mallBuildingIds.size < MAX_MALLS) {
+        this.mallBuildingIds.add(b.buildingId);
+        this.mallSubtypes.set(b.buildingId, randomPick(MALL_SUBTYPES));
+        added = true;
+      }
+    }
+    return added;
   }
 
   getBuildingRoles(): Map<number, BuildingRole> {
@@ -159,15 +389,52 @@ export class PopulationManager {
     for (const p of this.people.values()) {
       roles.set(p.workBuildingId, 'work');
     }
-    // Shopping buildings (medium priority)
-    for (const id of this.shoppingBuildingIds) {
-      roles.set(id, 'shopping');
+    // Expanded work buildings
+    for (const id of this.expandedWorkBuildingIds) {
+      roles.set(id, 'work');
+    }
+    // Supermarket buildings
+    for (const id of this.supermarketBuildingIds) {
+      roles.set(id, 'supermarket');
+    }
+    // Restaurant buildings
+    for (const id of this.restaurantBuildingIds) {
+      roles.set(id, 'restaurant');
+    }
+    // Mall buildings
+    for (const id of this.mallBuildingIds) {
+      roles.set(id, 'mall');
     }
     // Home buildings (highest priority)
     for (const h of this.households.values()) {
       roles.set(h.buildingId, 'home');
     }
     return roles;
+  }
+
+  getBuildingColors(): Map<number, number> {
+    const colors = new Map<number, number>();
+    // Role-based base colors
+    for (const h of this.households.values()) colors.set(h.buildingId, 0x8BC34A);
+    for (const id of this.mallBuildingIds) colors.set(id, 0xFFB74D);
+    for (const id of this.restaurantBuildingIds) colors.set(id, 0xE57373);
+    for (const id of this.supermarketBuildingIds) colors.set(id, 0xAED581);
+    // Profession-specific blues for work buildings
+    for (const [id, profession] of this.buildingProfessions) {
+      if (profession !== 'restaurant' && profession !== 'mall') {
+        colors.set(id, WORKPLACE_COLORS[profession]);
+      }
+    }
+    // Default blue for work buildings without a profession entry
+    for (const p of this.people.values()) {
+      if (!colors.has(p.workBuildingId)) {
+        colors.set(p.workBuildingId, 0x64B5F6);
+      }
+    }
+    for (const id of this.expandedWorkBuildingIds) {
+      if (!colors.has(id)) colors.set(id, 0x64B5F6);
+    }
+    return colors;
   }
 
   isInitialized(): boolean {
@@ -188,7 +455,17 @@ export class PopulationManager {
     if (!person) return;
     const restores = ACTIVITY_RESTORE[activity];
     for (const [needType, rate] of Object.entries(restores) as [NeedType, number][]) {
+      if (activity === 'home' && needType === 'hunger') {
+        const household = this.getHouseholdByPerson(personId);
+        if (!household || household.foodSupply <= 0) continue;
+        household.foodSupply = Math.max(0, household.foodSupply - 0.03 * deltaTime / household.memberIds.length);
+      }
       person.needs[needType].value = Math.min(100, person.needs[needType].value + rate * deltaTime);
+    }
+    if (activity === 'work') {
+      const earn = JOB_CONFIG[person.job].earnRate * deltaTime;
+      person.wallet += earn;
+      person.earnings += earn;
     }
   }
 
@@ -200,7 +477,8 @@ export class PopulationManager {
       needs[type] = person.needs[type].value;
     }
     return { id: person.id, name: person.name, job: person.job, needs, location: person.location,
-             homeBuildingId: person.homeBuildingId, workBuildingId: person.workBuildingId };
+             homeBuildingId: person.homeBuildingId, workBuildingId: person.workBuildingId,
+             wallet: person.wallet, earnings: person.earnings, personality: person.personality };
   }
 
   setPersonLocation(personId: number, location: PersonLocation): void {
@@ -232,16 +510,15 @@ export class PopulationManager {
         buildingId: h.buildingId,
         members,
         carActive: h.carActive,
+        foodSupply: h.foodSupply,
       });
     }
     return infos;
   }
 
   getHouseholdByPerson(personId: number): Household | undefined {
-    for (const h of this.households.values()) {
-      if (h.memberIds.includes(personId)) return h;
-    }
-    return undefined;
+    const hid = this.personToHousehold.get(personId);
+    return hid !== undefined ? this.households.get(hid) : undefined;
   }
 
   markHouseholdCarActive(householdId: number, active: boolean): void {
@@ -271,4 +548,4 @@ export class PopulationManager {
   }
 }
 
-export { ACTIVITY_RESTORE, NEED_TYPES };
+export { ACTIVITY_RESTORE, NEED_TYPES, JOB_CONFIG, RESTAURANT_COSTS, MALL_COSTS, SUPERMARKET_COST, PERSONALITY_CONFIG, WORKPLACE_COLORS, cheapestMealCost, cheapestMallCost };

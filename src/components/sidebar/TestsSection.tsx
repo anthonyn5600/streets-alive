@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo, memo } from 'react';
 import { FlaskConical, ChevronDown, ChevronRight } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import type { RuntimeTestResult, TestStatus } from '@/map/types';
@@ -26,13 +26,13 @@ function groupByCategory(results: RuntimeTestResult[]): Map<string, RuntimeTestR
   return groups;
 }
 
-export function TestsSection({ testResults, showTests, onToggleTests }: TestsSectionProps) {
+export const TestsSection = memo(function TestsSection({ testResults, showTests, onToggleTests }: TestsSectionProps) {
   const [collapsedCategories, setCollapsedCategories] = useState<Set<string>>(new Set());
 
-  const failCount = testResults.filter(r => r.status === 'fail').length;
+  const failCount = useMemo(() => testResults.filter(r => r.status === 'fail').length, [testResults]);
   const badgeCount = failCount > 0 ? failCount : testResults.length;
 
-  const groups = groupByCategory(testResults);
+  const groups = useMemo(() => groupByCategory(testResults), [testResults]);
 
   const toggleCategory = (cat: string) => {
     setCollapsedCategories(prev => {
@@ -102,4 +102,4 @@ export function TestsSection({ testResults, showTests, onToggleTests }: TestsSec
       </CollapsibleContent>
     </Collapsible>
   );
-}
+});

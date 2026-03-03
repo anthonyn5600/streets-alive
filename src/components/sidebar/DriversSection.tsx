@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useCallback, memo } from 'react';
 import { Car, X } from 'lucide-react';
 import { SidebarSection } from './SidebarSection';
 import { NeedBars, LocationBadge, PersonCard, colorToHex } from '@/components/shared/sim-display';
@@ -22,8 +22,10 @@ const ROAD_TYPE_LABELS: Record<string, string> = {
 const ACTIVITY_LABELS: Record<string, string> = {
   home: 'At Home',
   work: 'Working',
-  shopping: 'Shopping',
+  mall: 'At Mall',
   social: 'Socializing',
+  restaurant: 'Eating',
+  supermarket: 'Shopping',
 };
 
 interface DriversSectionProps {
@@ -31,28 +33,28 @@ interface DriversSectionProps {
   cars: SimCarInfo[];
 }
 
-export function DriversSection({ engine, cars }: DriversSectionProps) {
+export const DriversSection = memo(function DriversSection({ engine, cars }: DriversSectionProps) {
   const [expandedCarId, setExpandedCarId] = useState<number | null>(null);
 
-  const handleCarClick = (carId: number) => {
+  const handleCarClick = useCallback((carId: number) => {
     if (!engine) return;
     const car = cars.find(c => c.id === carId);
     if (car?.selected) {
       engine.deselectCar(carId);
-      if (expandedCarId === carId) setExpandedCarId(null);
+      setExpandedCarId(prev => prev === carId ? null : prev);
     } else {
       engine.selectCarById(carId);
       setExpandedCarId(carId);
       const pos = engine.getCarPosition(carId);
       if (pos) engine.flyToScenePos(pos.x, pos.z);
     }
-  };
+  }, [engine, cars]);
 
-  const handleDeselect = (e: React.MouseEvent, carId: number) => {
+  const handleDeselect = useCallback((e: React.MouseEvent, carId: number) => {
     e.stopPropagation();
     engine?.deselectCar(carId);
-    if (expandedCarId === carId) setExpandedCarId(null);
-  };
+    setExpandedCarId(prev => prev === carId ? null : prev);
+  }, [engine]);
 
   return (
     <SidebarSection icon={<Car className="size-4" />} title="Drivers" count={cars.length}>
@@ -101,17 +103,8 @@ export function DriversSection({ engine, cars }: DriversSectionProps) {
               {isExpanded && (
                 <div className="ml-5 mr-2 mt-1 mb-2 space-y-2">
                   {car.state === 'parked' && car.activity && (
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[10px] text-muted-foreground">
-                        <span>{ACTIVITY_LABELS[car.activity]}</span>
-                        <span>{Math.ceil(car.dwellRemaining)}s</span>
-                      </div>
-                      <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-blue-500 rounded-full transition-all"
-                          style={{ width: `${car.dwellProgress * 100}%` }}
-                        />
-                      </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {ACTIVITY_LABELS[car.activity]}
                     </div>
                   )}
 
@@ -148,4 +141,4 @@ export function DriversSection({ engine, cars }: DriversSectionProps) {
       </div>
     </SidebarSection>
   );
-}
+});

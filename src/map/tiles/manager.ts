@@ -3,6 +3,7 @@ import type { BBox, BuildingData, RoadData, TileKey, TileState } from '../types'
 import { fetchTileData, fetchTileBuffer, cacheSetDecoded, bboxToTiles, tileKey, tileBBox, type TileCoord } from './vector-tiles';
 import { createRoadMeshesFromArrays, disposeObject } from '../roads/renderer';
 import { createBuildingMeshFromArrays } from '../buildings';
+import { createLandUseMeshFromArrays } from '../landuse';
 import { createRoadLabelsFromPlacements } from '../roads/labels';
 import { geometryCache, getGeometryCached, putGeometryCached, geometryIdbKey } from './geometry-cache';
 import { getProjectionConstants } from '../projection';
@@ -61,6 +62,7 @@ export class TileManager {
   showBuildings = true;
   showRoads = true;
   showLabels = true;
+  showLandUse = true;
 
   heightMultiplier = 1;
   private buildingColorMap: Map<number, THREE.Color> | null = null;
@@ -253,6 +255,7 @@ export class TileManager {
       buildingMesh: null,
       buildingVertexRanges: null,
       roadMeshes: null,
+      landUseMesh: null,
     };
 
     this.tiles.set(key, tile);
@@ -365,6 +368,7 @@ export class TileManager {
           buildings: result.buildings,
           roads: result.roads,
           labelPlacements: result.labelPlacements,
+          landUse: result.landUse,
         };
         geometryCache.set(cacheKey, cached);
         putGeometryCached(idbKey, cached).catch(() => {});
@@ -420,6 +424,15 @@ export class TileManager {
 
       const group = new THREE.Group();
       group.name = `tile-${key}`;
+
+      if (cached.landUse && cached.landUse.length > 0) {
+        const landUseMesh = createLandUseMeshFromArrays(cached.landUse);
+        if (landUseMesh) {
+          landUseMesh.visible = this.showLandUse;
+          group.add(landUseMesh);
+          tile.landUseMesh = landUseMesh;
+        }
+      }
 
       if (cached.buildings) {
         const buildingMesh = createBuildingMeshFromArrays(cached.buildings, this.buildingColorMap ?? undefined);
@@ -572,10 +585,11 @@ export class TileManager {
     return all;
   }
 
-  setLayerVisibility(layer: 'buildings' | 'roads' | 'labels', visible: boolean) {
+  setLayerVisibility(layer: 'buildings' | 'roads' | 'labels' | 'landuse', visible: boolean) {
     if (layer === 'buildings') this.showBuildings = visible;
     else if (layer === 'roads') this.showRoads = visible;
     else if (layer === 'labels') this.showLabels = visible;
+    else if (layer === 'landuse') this.showLandUse = visible;
 
     for (const tile of this.tiles.values()) {
       if (layer === 'buildings' && tile.buildingMesh) {
@@ -588,6 +602,9 @@ export class TileManager {
       }
       if (layer === 'labels' && tile.labels) {
         tile.labels.visible = visible;
+      }
+      if (layer === 'landuse' && tile.landUseMesh) {
+        tile.landUseMesh.visible = visible;
       }
     }
   }

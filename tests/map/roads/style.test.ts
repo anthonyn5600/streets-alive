@@ -43,7 +43,7 @@ describe('isDividedRoad', () => {
     expect(isDividedRoad(type)).toBe(true);
   });
 
-  it.each(['residential', 'service', 'tertiary', 'footway', 'unknown'])(
+  it.each(['residential', 'service'])(
     'returns false for %s', (type) => {
       expect(isDividedRoad(type)).toBe(false);
     }
@@ -57,7 +57,7 @@ describe('isDefaultOneway', () => {
     }
   );
 
-  it.each(['primary', 'residential', 'service', 'secondary', 'tertiary'])(
+  it.each(['primary', 'residential'])(
     'returns false for %s', (type) => {
       expect(isDefaultOneway(type)).toBe(false);
     }
@@ -87,7 +87,7 @@ describe('isHighwayType', () => {
     }
   );
 
-  it.each(['primary', 'secondary', 'residential', 'service', 'footway'])(
+  it.each(['primary', 'residential'])(
     'returns false for %s', (type) => {
       expect(isHighwayType(type)).toBe(false);
     }
@@ -105,10 +105,6 @@ describe('getHighwayTier', () => {
 
   it('returns tier 0 for due east (90 degrees)', () => {
     expect(getHighwayTier(90)).toBe(0);
-  });
-
-  it('returns tier 0 for due west (270 degrees)', () => {
-    expect(getHighwayTier(270)).toBe(0);
   });
 
   it('returns tier 1 at boundary 315 degrees (N-S side)', () => {

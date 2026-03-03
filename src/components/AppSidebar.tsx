@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { SearchSection } from '@/components/sidebar/SearchSection';
@@ -17,7 +18,7 @@ interface AppSidebarProps {
   onToggleTests: () => void;
 }
 
-export function AppSidebar({ engine, cars, households, testResults, showTests, onToggleTests }: AppSidebarProps) {
+export const AppSidebar = memo(function AppSidebar({ engine, cars, households, testResults, showTests, onToggleTests }: AppSidebarProps) {
   return (
     <div className="absolute top-4 left-4 z-10 w-80 max-h-[calc(100vh-2rem)] flex flex-col bg-white/90 backdrop-blur-sm shadow-lg rounded-lg border border-border overflow-hidden">
       <SearchSection engine={engine} />
@@ -39,4 +40,4 @@ export function AppSidebar({ engine, cars, households, testResults, showTests, o
       </ScrollArea>
     </div>
   );
-}
+});

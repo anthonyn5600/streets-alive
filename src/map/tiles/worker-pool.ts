@@ -1,6 +1,6 @@
-import type { BuildingData, RoadData } from '../types';
+import type { BuildingData, LandUseData, RoadData } from '../types';
 import type { ProjectionConstants } from '../projection';
-import type { CachedBuildingArrays, CachedRoadArrays, CachedLabelPlacement } from './geometry-cache';
+import type { CachedBuildingArrays, CachedColoredRoadLayer, CachedRoadArrays, CachedLabelPlacement } from './geometry-cache';
 
 export interface GeometryJobInput {
   buffer: ArrayBuffer;
@@ -14,13 +14,16 @@ export interface GeometryJobResult {
   buildings: CachedBuildingArrays | null;
   roads: CachedRoadArrays;
   labelPlacements: CachedLabelPlacement[];
+  landUse: CachedColoredRoadLayer[];
   decodedBuildings: BuildingData[];
   decodedRoads: RoadData[];
+  decodedLandUse: LandUseData[];
 }
 
 export interface DecodeOnlyJobResult {
   decodedBuildings: BuildingData[];
   decodedRoads: RoadData[];
+  decodedLandUse: LandUseData[];
 }
 
 interface PendingJob {

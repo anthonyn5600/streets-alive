@@ -35,6 +35,12 @@ export interface RoadData {
   oneway: 1 | -1 | 0;
 }
 
+export interface LandUseData {
+  id: number;
+  polygon: LatLng[];
+  class: string;
+}
+
 export interface RoadStyle {
   fillColor: number;
   casingColor: number | null;
@@ -60,6 +66,7 @@ export interface TileState {
   buildingMesh: THREE.Mesh | null;
   buildingVertexRanges: BuildingVertexRange[] | null;
   roadMeshes: RoadMeshResult | null;
+  landUseMesh: THREE.Mesh | null;
 }
 
 export interface CarInfo {
@@ -71,12 +78,17 @@ export interface CarInfo {
 }
 
 // Life simulation types
-export type NeedType = 'energy' | 'social' | 'money' | 'fun' | 'health';
-export type ActivityType = 'home' | 'work' | 'shopping' | 'social';
+export type NeedType = 'energy' | 'hunger' | 'social' | 'fun' | 'health';
+export type ActivityType = 'home' | 'work' | 'mall' | 'social' | 'restaurant' | 'supermarket';
 export type JobType = 'Office Worker' | 'Retail' | 'Restaurant' | 'Healthcare'
   | 'Teacher' | 'Construction' | 'Tech' | 'Artist';
 
-export type PersonLocationType = 'home' | 'car' | 'building' | 'traveling';
+export type PersonLocationType = 'home' | 'car' | 'building' | 'traveling' | 'walking';
+
+export type PersonalityType = 'wild' | 'aggressive' | 'normal' | 'cautious' | 'impaired';
+export type WorkplaceType = 'office' | 'tech_office' | 'clinic' | 'school' | 'warehouse' | 'studio';
+export type RestaurantSubtype = 'fast_food' | 'diner' | 'cafe' | 'fine_dining';
+export type MallSubtype = 'mall' | 'outlet' | 'plaza';
 export interface PersonLocation {
   type: PersonLocationType;
   buildingId?: number;
@@ -97,6 +109,11 @@ export interface Person {
   homeBuildingId: number;
   workBuildingId: number;
   location: PersonLocation;
+  wallet: number;
+  earnings: number;
+  personality: PersonalityType;
+  shiftStart: number;
+  shiftEnd: number;
 }
 
 export interface Household {
@@ -104,6 +121,7 @@ export interface Household {
   buildingId: number;
   memberIds: number[];
   carActive: boolean;
+  foodSupply: number;
 }
 
 export interface PersonInfo {
@@ -114,6 +132,9 @@ export interface PersonInfo {
   location: PersonLocation;
   homeBuildingId: number;
   workBuildingId: number;
+  wallet: number;
+  earnings: number;
+  personality: PersonalityType;
 }
 
 export interface HouseholdInfo {
@@ -121,6 +142,7 @@ export interface HouseholdInfo {
   buildingId: number;
   members: PersonInfo[];
   carActive: boolean;
+  foodSupply: number;
 }
 
 export interface SimCarInfo {
@@ -133,8 +155,6 @@ export interface SimCarInfo {
   activity: ActivityType | null;
   occupants: PersonInfo[];
   guestOccupants: PersonInfo[];
-  dwellProgress: number; // 0-1
-  dwellRemaining: number;
   householdId: number;
   routeProgress: number; // 0-1 driving progress, -1 if parked
   originBuildingId: number | null;
@@ -175,14 +195,15 @@ export interface CarTestData {
   destinationBuildingId: number | null;
   householdId: number;
   activity: ActivityType | null;
-  dwellTotal: number;
-  dwellRemaining: number;
   speed: number;
   occupantIds: number[];
   guestOccupantIds: number[];
   pendingDropoffs: number;
   isDropoffTrip: boolean;
   hidden: boolean;
+  originRoadName: string | null;
+  destinationRoadName: string | null;
+  segmentProgress: number;
 }
 
 export interface PersonTestData {
@@ -199,6 +220,9 @@ export interface RuntimeTestSnapshot {
   persons: PersonTestData[];
   indexedBuildingIds: Set<number>;
   buildingRoleIds: Set<number>;
-  shoppingBuildingCount: number;
+  mallBuildingCount: number;
+  restaurantBuildingCount: number;
+  supermarketBuildingCount: number;
   populationInitialized: boolean;
+  savedRoleParkingIds: Set<number>;
 }
