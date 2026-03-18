@@ -113,6 +113,11 @@ const WORKPLACE_COLORS: Record<WorkplaceType, number> = {
 let nextPersonId = 1;
 let nextHouseholdId = 1;
 
+export function resetSimIdCounters() {
+  nextPersonId = 1;
+  nextHouseholdId = 1;
+}
+
 function randomRange(min: number, max: number): number {
   return min + Math.random() * (max - min);
 }

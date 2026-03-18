@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { MapCameraController } from './camera';
 import { TileManager } from './tiles/manager';
 import { CarManager } from './cars';
-import { PopulationManager } from './simulation/population';
+import { PopulationManager, resetSimIdCounters } from './simulation/population';
 import { TripPlanner } from './simulation/trip-planner';
 import { RuntimeTestRunner } from './simulation/runtime-test-runner';
 import { SimClock } from './simulation/clock';
@@ -478,10 +478,10 @@ export class MapEngine {
       const tileCenterLng = ((tx + 0.5) / n) * 360 - 180;
       const tileCenterLat = (Math.atan(Math.sinh(Math.PI * (1 - (2 * (ty + 0.5)) / n))) * 180) / Math.PI;
 
-      const dist = Math.sqrt(
-        Math.pow(tileCenterLat - cameraLatLng.lat, 2) +
-        Math.pow(tileCenterLng - cameraLatLng.lng, 2)
-      );
+      const dLat = tileCenterLat - cameraLatLng.lat;
+      const cosLat = Math.cos(cameraLatLng.lat * Math.PI / 180);
+      const dLng = (tileCenterLng - cameraLatLng.lng) * cosLat;
+      const dist = Math.sqrt(dLat * dLat + dLng * dLng);
 
       if (dist > PERSIST_RADIUS_DEG) {
         this.persistentRoadData.delete(key);
@@ -626,6 +626,7 @@ export class MapEngine {
     this.lights.moonMaterial.map?.dispose();
     this.lights.moonMaterial.dispose();
     this.carManager.dispose();
+    resetSimIdCounters();
     this.tileManager.dispose();
     this.persistentRoadData.clear();
     this.persistentSimBuildings.clear();

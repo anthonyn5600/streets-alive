@@ -100,6 +100,8 @@ interface StencilConfig {
   stencilFuncMask: number;
 }
 
+// Test-only stencil: local roads skip areas where highway mask wrote stencilRef=1.
+// stencilWrite is false because local roads only read the stencil, never write to it.
 const LOCAL_STENCIL: StencilConfig = {
   stencilWrite: false,
   stencilFunc: THREE.NotEqualStencilFunc,

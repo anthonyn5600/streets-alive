@@ -76,15 +76,19 @@ interface Car {
 
 let nextCarId = 1;
 
+export function resetCarIdCounter() {
+  nextCarId = 1;
+}
+
 function createCarGeometry() {
   return new THREE.BoxGeometry(2, 1.5, 4);
 }
 
 function createRouteMaterial() {
   return new THREE.MeshBasicMaterial({
-    color: 0x4488ff,
+    color: 0x00d4aa,
     transparent: true,
-    opacity: 0.6,
+    opacity: 0.8,
     side: THREE.DoubleSide,
     depthWrite: false,
     polygonOffset: true,
@@ -93,8 +97,10 @@ function createRouteMaterial() {
   });
 }
 
+// Pin textures are instance-managed via CarManager to avoid cross-engine disposal issues
 let originPinTexture: THREE.CanvasTexture | null = null;
 let destPinTexture: THREE.CanvasTexture | null = null;
+let pinTextureOwner: CarManager | null = null;
 
 function createPinTexture(color: string, label: string): THREE.CanvasTexture {
   const size = 256;
@@ -128,13 +134,19 @@ function createPinTexture(color: string, label: string): THREE.CanvasTexture {
   return tex;
 }
 
-function getOriginPinTexture(): THREE.CanvasTexture {
-  if (!originPinTexture) originPinTexture = createPinTexture('#22a855', 'A');
+function getOriginPinTexture(owner: CarManager): THREE.CanvasTexture {
+  if (!originPinTexture || pinTextureOwner !== owner) {
+    originPinTexture = createPinTexture('#22a855', 'A');
+    pinTextureOwner = owner;
+  }
   return originPinTexture;
 }
 
-function getDestPinTexture(): THREE.CanvasTexture {
-  if (!destPinTexture) destPinTexture = createPinTexture('#dd3333', 'B');
+function getDestPinTexture(owner: CarManager): THREE.CanvasTexture {
+  if (!destPinTexture || pinTextureOwner !== owner) {
+    destPinTexture = createPinTexture('#dd3333', 'B');
+    pinTextureOwner = owner;
+  }
   return destPinTexture;
 }
 
@@ -1029,7 +1041,7 @@ export class CarManager {
 
     if (originPos) {
       const mat = new THREE.SpriteMaterial({
-        map: getOriginPinTexture(),
+        map: getOriginPinTexture(this),
         depthTest: false,
         sizeAttenuation: true,
       });
@@ -1043,7 +1055,7 @@ export class CarManager {
 
     if (destPos) {
       const mat = new THREE.SpriteMaterial({
-        map: getDestPinTexture(),
+        map: getDestPinTexture(this),
         depthTest: false,
         sizeAttenuation: true,
       });
@@ -1544,7 +1556,11 @@ export class CarManager {
     this.carGeometry.dispose();
     this.routeMaterial.dispose();
     for (const mat of this.carMaterials.values()) mat.dispose();
-    if (originPinTexture) { originPinTexture.dispose(); originPinTexture = null; }
-    if (destPinTexture) { destPinTexture.dispose(); destPinTexture = null; }
+    if (pinTextureOwner === this) {
+      if (originPinTexture) { originPinTexture.dispose(); originPinTexture = null; }
+      if (destPinTexture) { destPinTexture.dispose(); destPinTexture = null; }
+      pinTextureOwner = null;
+    }
+    resetCarIdCounter();
   }
 }

@@ -5,39 +5,45 @@
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {
-  --color-background: #f8f8f8;
-  --color-foreground: #0a0a0a;
-  --color-card: #ffffff;
-  --color-card-foreground: #0a0a0a;
-  --color-popover: #ffffff;
-  --color-popover-foreground: #0a0a0a;
-  --color-primary: #171717;
-  --color-primary-foreground: #fafafa;
-  --color-secondary: #f5f5f5;
-  --color-secondary-foreground: #171717;
-  --color-muted: #f5f5f5;
-  --color-muted-foreground: #737373;
-  --color-accent: #f5f5f5;
-  --color-accent-foreground: #171717;
-  --color-destructive: #ef4444;
-  --color-destructive-foreground: #fafafa;
-  --color-border: #e5e5e5;
-  --color-input: #e5e5e5;
-  --color-ring: #0a0a0a;
+  --font-display: 'Outfit', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --color-background: #0d0f12;
+  --color-foreground: #c8cdd5;
+  --color-card: rgba(17, 20, 26, 0.85);
+  --color-card-foreground: #c8cdd5;
+  --color-popover: #11141a;
+  --color-popover-foreground: #c8cdd5;
+  --color-primary: #00d4aa;
+  --color-primary-foreground: #0d0f12;
+  --color-secondary: rgba(255, 255, 255, 0.06);
+  --color-secondary-foreground: #8a919c;
+  --color-muted: rgba(255, 255, 255, 0.04);
+  --color-muted-foreground: #5c6370;
+  --color-accent: rgba(0, 212, 170, 0.1);
+  --color-accent-foreground: #00d4aa;
+  --color-destructive: #ff6b8a;
+  --color-destructive-foreground: #0d0f12;
+  --color-border: rgba(255, 255, 255, 0.08);
+  --color-input: rgba(255, 255, 255, 0.08);
+  --color-ring: rgba(0, 212, 170, 0.4);
   --radius: 0.5rem;
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
+
+  --color-sidebar-ring: rgba(0, 212, 170, 0.3);
+  --color-sidebar-border: rgba(255, 255, 255, 0.08);
+  --color-sidebar-accent-foreground: #00d4aa;
+  --color-sidebar-accent: rgba(0, 212, 170, 0.08);
+  --color-sidebar-primary-foreground: #c8cdd5;
+  --color-sidebar-primary: #00d4aa;
+  --color-sidebar-foreground: #8a919c;
+  --color-sidebar: rgba(17, 20, 26, 0.85);
+
+  --color-chart-1: #00d4aa;
+  --color-chart-2: #f5a623;
+  --color-chart-3: #ff6b8a;
+  --color-chart-4: #7c5cfc;
+  --color-chart-5: #3b9eff;
+
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
@@ -45,6 +51,20 @@
   --radius-2xl: calc(var(--radius) + 8px);
   --radius-3xl: calc(var(--radius) + 12px);
   --radius-4xl: calc(var(--radius) + 16px);
+
+  --color-teal: #00d4aa;
+  --color-teal-dim: rgba(0, 212, 170, 0.15);
+  --color-teal-glow: rgba(0, 212, 170, 0.25);
+  --color-amber: #f5a623;
+  --color-amber-dim: rgba(245, 166, 35, 0.15);
+  --color-rose: #ff6b8a;
+  --color-rose-dim: rgba(255, 107, 138, 0.15);
+  --color-panel: rgba(17, 20, 26, 0.88);
+  --color-panel-hover: rgba(255, 255, 255, 0.04);
+  --color-panel-active: rgba(0, 212, 170, 0.08);
+  --color-text-bright: #e4e8ee;
+  --color-text-mid: #8a919c;
+  --color-text-dim: #4a5060;
 }
 
 html, body, #root {
@@ -53,76 +73,13 @@ html, body, #root {
   width: 100%;
   height: 100%;
   overflow: hidden;
-  font-family: system-ui, -apple-system, sans-serif;
+  font-family: 'Outfit', sans-serif;
+  background: #0d0f12;
+  color: #c8cdd5;
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
-  --chart-2: oklch(0.6 0.118 184.704);
-  --chart-3: oklch(0.398 0.07 227.392);
-  --chart-4: oklch(0.828 0.189 84.429);
-  --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
-
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --radius: 0.5rem;
 }
 
 @layer base {
@@ -134,6 +91,66 @@ html, body, #root {
   }
 }
 
+/* Panel glass effect */
+.panel-glass {
+  background: rgba(13, 15, 20, 0.88);
+  backdrop-filter: blur(16px) saturate(140%);
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.3),
+    0 8px 32px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+/* Top accent stripe on panels */
+.panel-accent::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 12px;
+  right: 12px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #00d4aa, transparent);
+  opacity: 0.6;
+  z-index: 1;
+}
+
+/* Subtle noise texture overlay */
+.noise-overlay::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  opacity: 0.015;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  border-radius: inherit;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.18);
+}
+
+/* Glow pulse for active indicators */
+@keyframes glow-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.glow-dot {
+  animation: glow-pulse 2s ease-in-out infinite;
+}
+
 @keyframes collapsible-down {
   from { height: 0; opacity: 0; }
   to { height: var(--radix-collapsible-content-height); opacity: 1; }
@@ -141,4 +158,19 @@ html, body, #root {
 @keyframes collapsible-up {
   from { height: var(--radix-collapsible-content-height); opacity: 1; }
   to { height: 0; opacity: 0; }
+}
+
+/* Data readout monospace styling */
+.data-readout {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  font-feature-settings: 'tnum';
+}
+
+/* Section divider with fade */
+.section-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.08), transparent);
+  margin: 4px 12px;
 }

@@ -56,7 +56,7 @@ export interface IndexedBuilding {
   roadName: string;
 }
 
-const CLUSTER_TOLERANCE = 10; // meters
+const CLUSTER_TOLERANCE = 5; // meters -- tight enough to avoid merging parallel roads
 const MIN_SPAWN_SPEED = 0.55;
 const MAX_BUILDING_NODE_DIST_SQ = 35 * 35;
 const SNAP_THRESHOLD = 2; // meters -- snap to existing endpoint instead of splitting
@@ -660,6 +660,7 @@ export class RoadGraph {
       const { node, cost } = entry;
 
       if (node === endId) break;
+      // Lazy deletion: skip stale heap entries (duplicates from re-insertions)
       if (cost > dist[node]) continue;
 
       const edges = this.adjacency.get(node);
@@ -1138,7 +1139,7 @@ export class RoadGraph {
 
   getBuildingRoadName(buildingId: number): string | null {
     const b = this.buildingMap.get(buildingId);
-    return b?.roadName || null;
+    return b?.roadName ?? null;
   }
 
   filterIndexedBuildings(keepIds: Set<number>): void {

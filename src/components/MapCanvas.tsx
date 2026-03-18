@@ -14,6 +14,9 @@ export function MapCanvas({ onEngineReady, onStateChange }: MapCanvasProps) {
   const stateChangeRef = useRef(onStateChange);
   stateChangeRef.current = onStateChange;
 
+  const engineReadyRef = useRef(onEngineReady);
+  engineReadyRef.current = onEngineReady;
+
   const stableStateChange = useCallback((state: MapState) => {
     stateChangeRef.current(state);
   }, []);
@@ -25,7 +28,7 @@ export function MapCanvas({ onEngineReady, onStateChange }: MapCanvasProps) {
     const engine = new MapEngine();
     engineRef.current = engine;
     engine.init(canvas, stableStateChange);
-    onEngineReady(engine);
+    engineReadyRef.current(engine);
 
     // Resize observer
     const observer = new ResizeObserver(entries => {
@@ -43,7 +46,7 @@ export function MapCanvas({ onEngineReady, onStateChange }: MapCanvasProps) {
       engine.dispose();
       engineRef.current = null;
     };
-  }, [onEngineReady, stableStateChange]);
+  }, [stableStateChange]);
 
   return (
     <canvas

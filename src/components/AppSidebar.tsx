@@ -1,6 +1,5 @@
 import { memo } from 'react';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Separator } from '@/components/ui/separator';
 import { SearchSection } from '@/components/sidebar/SearchSection';
 import { LayersSection } from '@/components/sidebar/LayersSection';
 import { DriversSection } from '@/components/sidebar/DriversSection';
@@ -20,21 +19,21 @@ interface AppSidebarProps {
 
 export const AppSidebar = memo(function AppSidebar({ engine, cars, households, testResults, showTests, onToggleTests }: AppSidebarProps) {
   return (
-    <div className="absolute top-4 left-4 z-10 w-80 max-h-[calc(100vh-2rem)] flex flex-col bg-white/90 backdrop-blur-sm shadow-lg rounded-lg border border-border overflow-hidden">
+    <div className="absolute top-4 left-4 z-10 w-80 max-h-[calc(100vh-2rem)] flex flex-col panel-glass panel-accent noise-overlay rounded-lg overflow-hidden">
       <SearchSection engine={engine} />
-      <Separator />
+      <div className="section-divider" />
       <ScrollArea className="flex-1 min-h-0">
         <div className="py-1">
           <LayersSection engine={engine} />
-          <Separator className="my-1" />
+          <div className="section-divider" />
           <DriversSection engine={engine} cars={cars} />
           {households.length > 0 && (
             <>
-              <Separator className="my-1" />
+              <div className="section-divider" />
               <HouseholdsSection engine={engine} households={households} />
             </>
           )}
-          <Separator className="my-1" />
+          <div className="section-divider" />
           <TestsSection testResults={testResults} showTests={showTests} onToggleTests={onToggleTests} />
         </div>
       </ScrollArea>

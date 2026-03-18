@@ -37,23 +37,29 @@ export function SearchSection({ engine }: SearchSectionProps) {
   };
 
   return (
-    <div className="px-3 pb-2 space-y-2">
+    <div className="px-3 pt-4 pb-2 space-y-2">
       <div className="flex gap-2">
         <Input
-          placeholder="lat, lng or city name"
+          placeholder="lat, lng or city"
           value={value}
           onChange={e => setValue(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && handleGo()}
-          className="h-8 text-sm"
+          className="h-8 text-sm bg-white/[0.03] border-white/[0.08] text-text-bright placeholder:text-text-dim font-mono text-xs focus:border-teal/40 focus:ring-teal/20"
         />
-        <Button size="sm" onClick={handleGo} className="h-8 px-3">Go</Button>
+        <Button
+          size="sm"
+          onClick={handleGo}
+          className="h-8 px-3 bg-teal/15 text-teal border border-teal/20 hover:bg-teal/25 hover:border-teal/40 transition-all font-display font-medium text-xs"
+        >
+          Go
+        </Button>
       </div>
       <div className="flex flex-wrap gap-1">
         {Object.entries(PRESETS).map(([name, [lat, lng]]) => (
           <button
             key={name}
             onClick={() => engine?.flyTo(lat, lng)}
-            className="text-[10px] px-1.5 py-0.5 bg-muted rounded hover:bg-accent transition-colors"
+            className="text-[10px] px-2 py-0.5 bg-white/[0.03] border border-white/[0.06] rounded text-text-mid hover:text-teal hover:bg-teal-dim hover:border-teal/20 transition-all font-display"
           >
             {name}
           </button>

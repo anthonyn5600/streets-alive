@@ -27,15 +27,15 @@ function LocationRow({ label, color, address, onClick }: {
   return (
     <button
       onClick={onClick}
-      className="flex items-center gap-1.5 w-full text-left hover:bg-black/5 rounded px-1 py-0.5 transition-colors"
+      className="flex items-center gap-2 w-full text-left hover:bg-panel-hover rounded px-1.5 py-1 transition-colors group"
     >
       <span
-        className="w-4 h-4 rounded-full flex-shrink-0 flex items-center justify-center text-white text-[9px] font-bold"
-        style={{ backgroundColor: color }}
+        className="w-4 h-4 rounded flex-shrink-0 flex items-center justify-center text-[9px] font-bold font-mono"
+        style={{ backgroundColor: color, color: '#0d0f12' }}
       >
         {label}
       </span>
-      <span className="truncate text-muted-foreground">
+      <span className="truncate text-text-mid group-hover:text-text-bright transition-colors data-readout">
         {address || 'Unknown street'}
       </span>
     </button>
@@ -47,42 +47,45 @@ export const RoutePanel = memo(function RoutePanel({ engine, cars }: RoutePanelP
   if (selected.length === 0) return null;
 
   return (
-    <div className="absolute top-4 right-4 z-10 bg-white/90 backdrop-blur-sm shadow-md rounded-lg p-3 text-xs min-w-[220px] max-w-[280px]">
-      <div className="flex items-center justify-between mb-2">
-        <span className="font-semibold text-sm">Selected Routes</span>
+    <div className="absolute top-4 right-4 z-20 panel-glass panel-accent noise-overlay rounded-lg p-3 text-xs min-w-[220px] max-w-[280px]">
+      <div className="flex items-center justify-between mb-3">
+        <span className="font-display font-semibold text-sm text-text-bright tracking-wide">Routes</span>
         <button
           onClick={() => engine?.deselectCar()}
-          className="text-muted-foreground hover:text-red-500 transition-colors"
+          className="text-text-dim hover:text-rose transition-colors"
         >
           <X className="size-4" />
         </button>
       </div>
-      <div className="space-y-2.5">
+      <div className="space-y-3">
         {selected.map(car => (
-          <div key={car.id} className="space-y-1">
+          <div key={car.id} className="space-y-1.5">
             <div className="flex items-center gap-2">
               <span
-                className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                className="w-2.5 h-2.5 rounded-full flex-shrink-0 ring-1 ring-white/10"
                 style={{ backgroundColor: colorToHex(car.color) }}
               />
-              <span className="font-medium whitespace-nowrap">Car #{car.id}</span>
+              <span className="font-mono text-[11px] font-medium text-text-bright whitespace-nowrap">#{car.id}</span>
               <div className="flex-1 min-w-0">
                 {car.state === 'driving' && car.routeProgress >= 0 ? (
-                  <div className="h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                  <div className="h-1 bg-white/5 rounded-full overflow-hidden">
                     <div
-                      className="h-full bg-blue-500 rounded-full transition-all"
-                      style={{ width: `${Math.min(car.routeProgress * 100, 100)}%` }}
+                      className="h-full rounded-full transition-all"
+                      style={{
+                        width: `${Math.min(car.routeProgress * 100, 100)}%`,
+                        background: 'linear-gradient(90deg, #00d4aa, #3b9eff)',
+                      }}
                     />
                   </div>
                 ) : (
-                  <span className="text-muted-foreground truncate block">
+                  <span className="text-amber data-readout block truncate">
                     {ACTIVITY_LABELS[car.activity ?? ''] ?? 'Parked'}
                   </span>
                 )}
               </div>
               <button
                 onClick={() => engine?.deselectCar(car.id)}
-                className="text-muted-foreground hover:text-red-500 flex-shrink-0 transition-colors"
+                className="text-text-dim hover:text-rose flex-shrink-0 transition-colors"
               >
                 <X className="size-3" />
               </button>
@@ -90,7 +93,7 @@ export const RoutePanel = memo(function RoutePanel({ engine, cars }: RoutePanelP
             <div className="pl-4 space-y-0.5">
               <LocationRow
                 label="A"
-                color="#22a855"
+                color="#00d4aa"
                 address={car.originAddress}
                 onClick={() => {
                   if (car.originPos) engine?.flyToScenePos(car.originPos.x, car.originPos.z);
@@ -98,7 +101,7 @@ export const RoutePanel = memo(function RoutePanel({ engine, cars }: RoutePanelP
               />
               <LocationRow
                 label="B"
-                color="#dd3333"
+                color="#ff6b8a"
                 address={car.destinationAddress}
                 onClick={() => {
                   if (car.destinationPos) engine?.flyToScenePos(car.destinationPos.x, car.destinationPos.z);

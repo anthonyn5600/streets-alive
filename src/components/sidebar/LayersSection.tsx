@@ -14,7 +14,7 @@ export function LayersSection({ engine }: LayersSectionProps) {
     <SidebarSection icon={<Layers className="size-4" />} title="Layers">
       <div className="space-y-3">
         <div className="flex items-center justify-between">
-          <Label htmlFor="buildings" className="text-xs">Buildings</Label>
+          <Label htmlFor="buildings" className="text-xs text-text-mid font-display">Buildings</Label>
           <Switch
             id="buildings"
             defaultChecked
@@ -22,7 +22,7 @@ export function LayersSection({ engine }: LayersSectionProps) {
           />
         </div>
         <div className="flex items-center justify-between">
-          <Label htmlFor="landuse" className="text-xs">Land Use</Label>
+          <Label htmlFor="landuse" className="text-xs text-text-mid font-display">Land Use</Label>
           <Switch
             id="landuse"
             defaultChecked
@@ -30,7 +30,7 @@ export function LayersSection({ engine }: LayersSectionProps) {
           />
         </div>
         <div className="flex items-center justify-between">
-          <Label htmlFor="roads" className="text-xs">Roads</Label>
+          <Label htmlFor="roads" className="text-xs text-text-mid font-display">Roads</Label>
           <Switch
             id="roads"
             defaultChecked
@@ -38,7 +38,7 @@ export function LayersSection({ engine }: LayersSectionProps) {
           />
         </div>
         <div className="flex items-center justify-between">
-          <Label htmlFor="labels" className="text-xs">Road Labels</Label>
+          <Label htmlFor="labels" className="text-xs text-text-mid font-display">Road Labels</Label>
           <Switch
             id="labels"
             defaultChecked
@@ -46,14 +46,14 @@ export function LayersSection({ engine }: LayersSectionProps) {
           />
         </div>
         <div className="flex items-center justify-between">
-          <Label htmlFor="parking-debug" className="text-xs">Parking Debug</Label>
+          <Label htmlFor="parking-debug" className="text-xs text-text-mid font-display">Parking Debug</Label>
           <Switch
             id="parking-debug"
             onCheckedChange={v => engine?.setParkingDebug(v)}
           />
         </div>
-        <div className="pt-2 border-t space-y-1">
-          <Label className="text-xs text-muted-foreground">Building Height</Label>
+        <div className="pt-2 border-t border-white/[0.06] space-y-1">
+          <Label className="text-xs text-text-dim font-display">Building Height</Label>
           <Slider
             defaultValue={[1]}
             min={0.1}

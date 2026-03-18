@@ -65,27 +65,27 @@ export const DriversSection = memo(function DriversSection({ engine, cars }: Dri
             <div key={car.id}>
               <button
                 onClick={() => handleCarClick(car.id)}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs transition-colors ${
+                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs transition-all ${
                   car.selected
-                    ? 'bg-blue-100 border border-blue-300'
-                    : 'hover:bg-gray-100 border border-transparent'
+                    ? 'bg-teal-dim border border-teal/25 text-text-bright'
+                    : 'hover:bg-panel-hover border border-transparent text-text-mid'
                 }`}
               >
                 <span
-                  className="w-3 h-3 rounded-full flex-shrink-0"
+                  className="w-3 h-3 rounded-full flex-shrink-0 ring-1 ring-white/10"
                   style={{ backgroundColor: colorToHex(car.color) }}
                 />
-                <span className="font-medium flex-1">Car #{car.id}</span>
+                <span className="font-mono font-medium flex-1 text-[11px]">#{car.id}</span>
                 {car.state === 'parked' ? (
-                  <span className="text-[10px] px-1 py-0.5 bg-amber-200 rounded">
+                  <span className="data-readout px-1.5 py-0.5 bg-amber-dim rounded text-amber border border-amber/15">
                     {ACTIVITY_LABELS[car.activity ?? ''] ?? 'Parked'}
                   </span>
                 ) : (
                   <>
-                    <span className="text-[10px] px-1 py-0.5 bg-gray-200 rounded">
+                    <span className="data-readout px-1.5 py-0.5 bg-white/[0.04] rounded text-text-dim border border-white/[0.06]">
                       {ROAD_TYPE_LABELS[car.roadType] ?? car.roadType}
                     </span>
-                    <span className="text-muted-foreground w-8 text-right">
+                    <span className="data-readout text-text-dim w-8 text-right">
                       {Math.round(car.speed)}
                     </span>
                   </>
@@ -93,7 +93,7 @@ export const DriversSection = memo(function DriversSection({ engine, cars }: Dri
                 {car.selected && (
                   <span
                     onClick={(e) => handleDeselect(e, car.id)}
-                    className="text-muted-foreground hover:text-red-500 cursor-pointer ml-1"
+                    className="text-text-dim hover:text-rose cursor-pointer ml-1 transition-colors"
                   >
                     <X className="size-3" />
                   </span>
@@ -103,7 +103,7 @@ export const DriversSection = memo(function DriversSection({ engine, cars }: Dri
               {isExpanded && (
                 <div className="ml-5 mr-2 mt-1 mb-2 space-y-2">
                   {car.state === 'parked' && car.activity && (
-                    <div className="text-[10px] text-muted-foreground">
+                    <div className="data-readout text-amber">
                       {ACTIVITY_LABELS[car.activity]}
                     </div>
                   )}
@@ -118,12 +118,12 @@ export const DriversSection = memo(function DriversSection({ engine, cars }: Dri
 
                   {car.guestOccupants.length > 0 && (
                     <div className="space-y-1.5 mt-1">
-                      <div className="text-[10px] text-muted-foreground font-medium">Guests</div>
+                      <div className="data-readout text-text-dim font-medium uppercase tracking-wider">Guests</div>
                       {car.guestOccupants.map(person => (
                         <div key={person.id} className="space-y-0.5">
                           <div className="flex items-center gap-1 text-[11px]">
-                            <span className="font-medium">{person.name}</span>
-                            <span className="text-[9px] px-1 py-0 bg-purple-100 rounded text-purple-700">
+                            <span className="font-display font-medium text-text-bright">{person.name}</span>
+                            <span className="data-readout px-1 py-0 bg-purple-500/15 rounded text-purple-400 border border-purple-500/20">
                               {person.job}
                             </span>
                             <LocationBadge location={person.location} />

@@ -37,35 +37,35 @@ export const HouseholdsSection = memo(function HouseholdsSection({ engine, house
             <div key={h.id}>
               <button
                 onClick={() => handleHouseholdClick(h)}
-                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs transition-colors ${
+                className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs transition-all ${
                   isExpanded
-                    ? 'bg-blue-100 border border-blue-300'
-                    : 'hover:bg-gray-100 border border-transparent'
+                    ? 'bg-teal-dim border border-teal/25 text-text-bright'
+                    : 'hover:bg-panel-hover border border-transparent text-text-mid'
                 }`}
               >
-                <span className="font-medium flex-1">Household #{h.id}</span>
-                <span className="text-[10px] text-muted-foreground">{h.members.length}p</span>
+                <span className="font-mono font-medium flex-1 text-[11px]">#{h.id}</span>
+                <span className="data-readout text-text-dim">{h.members.length}p</span>
                 {h.carActive ? (
-                  <span className="text-[10px] px-1 py-0.5 bg-amber-200 rounded">Car Out</span>
+                  <span className="data-readout px-1.5 py-0.5 bg-amber-dim rounded text-amber border border-amber/15">Car Out</span>
                 ) : (
-                  <span className="text-[10px] px-1 py-0.5 bg-green-200 rounded">At Home</span>
+                  <span className="data-readout px-1.5 py-0.5 bg-teal-dim rounded text-teal border border-teal/15">At Home</span>
                 )}
               </button>
 
               {isExpanded && (
                 <div className="ml-3 mr-2 mt-1 mb-2 space-y-1.5">
-                  <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <div className="flex items-center gap-1 data-readout text-text-dim">
                     <span>Food:</span>
-                    <div className="flex-1 h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                    <div className="flex-1 h-1.5 bg-white/[0.04] rounded-full overflow-hidden">
                       <div
                         className="h-full rounded-full transition-all"
                         style={{
                           width: `${h.foodSupply}%`,
-                          backgroundColor: h.foodSupply > 40 ? '#22c55e' : h.foodSupply > 15 ? '#eab308' : '#ef4444',
+                          backgroundColor: h.foodSupply > 40 ? '#00d4aa' : h.foodSupply > 15 ? '#f5a623' : '#ff6b8a',
                         }}
                       />
                     </div>
-                    <span>{Math.round(h.foodSupply)}</span>
+                    <span className="text-text-mid">{Math.round(h.foodSupply)}</span>
                   </div>
                   {h.members.map(person => (
                     <PersonCard
